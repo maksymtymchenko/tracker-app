@@ -6,11 +6,13 @@
   "main": "dist/main/main.js",
   "scripts": {
     "clean": "rimraf dist",
-    "build": "npm run clean && tsc",
+    "copy-html": "node scripts/copy-html.js",
+    "build": "npm run clean && tsc && npm run copy-html",
     "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
     "start": "electron .",
     "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win"
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac"
   },
   "build": {
     "appId": "com.activitytracker.app",
@@ -47,6 +49,28 @@
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.exe"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "dmg": {
+      "title": "${productName} ${version}"
     }
   },
   "keywords": [

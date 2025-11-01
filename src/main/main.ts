@@ -1,5 +1,6 @@
 import path from 'path';
 import os from 'os';
+import fs from 'fs';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { ensureConfigFile } from './config';
 import { registerIpcHandlers } from './ipc';
@@ -50,12 +51,53 @@ async function createWindow(): Promise<void> {
   if (isDev) {
     await mainWindow.loadFile(path.join(process.cwd(), 'src/renderer/index.html'));
   } else {
-    await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    // In production, try multiple possible paths (Windows may package differently)
+    const possiblePaths = [
+      path.join(__dirname, '../renderer/index.html'),
+      path.join(app.getAppPath(), 'dist', 'renderer', 'index.html'),
+      path.join(app.getAppPath(), 'renderer', 'index.html')
+    ];
+    
+    let loaded = false;
+    for (const htmlPath of possiblePaths) {
+      try {
+        if (fs.existsSync(htmlPath)) {
+          console.log('[tracker] loading HTML from:', htmlPath);
+          await mainWindow.loadFile(htmlPath);
+          loaded = true;
+          break;
+        }
+      } catch (err) {
+        console.log('[tracker] failed to load from:', htmlPath, err);
+      }
+    }
+    
+    if (!loaded) {
+      console.error('[tracker] HTML file not found, trying loadURL fallback');
+      // Last resort: try direct URL
+      const fallbackPath = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
+      const url = `file://${fallbackPath}`.replace(/\\/g, '/');
+      if (mainWindow) {
+        mainWindow.loadURL(url);
+      }
+    }
   }
 
   mainWindow.on('close', (e) => {
     e.preventDefault();
     mainWindow?.hide();
+  });
+
+  // Open DevTools on Windows if there's an issue (helpful for debugging white screen)
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('[tracker] failed to load page:', errorCode, errorDescription);
+    if (mainWindow && !isDev) {
+      mainWindow.webContents.openDevTools();
+    }
+  });
+
+  mainWindow.webContents.on('console-message', (event, level, message) => {
+    console.log(`[renderer:${level}]`, message);
   });
 
   // IPC already registered above

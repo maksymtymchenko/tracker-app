@@ -4,8 +4,9 @@ node_modules/
 # Build outputs
 dist/
 out/
-build/
 release/
+*.asar
+*.asar.unpacked
 
 # Logs
 *.log
@@ -13,23 +14,39 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
 # OS/Editor
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 .idea/
 .vscode/
-.cache/
-.temp/
-.tmp/
+*.swp
+*.swo
+*~
 
 # Env/config
 .env
 .env.*
 *.local
 
-# Electron
-*.asar
-electron-builder.yml
-spec.md
+# User config (per-user installation)
+.windows-activity-tracker/
 
+# Electron
+electron-builder.yml
+.electron-builder/
+
+# Temporary files
+.cache/
+.temp/
+.tmp/
+*.tmp
+
+# Build scripts output
+scripts/*.js.map
