@@ -1,4 +1,5 @@
 import path from 'path';
+import os from 'os';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { ensureConfigFile } from './config';
 import { registerIpcHandlers } from './ipc';
@@ -14,6 +15,18 @@ import { v4 as uuidv4 } from 'uuid';
 let mainWindow: BrowserWindow | null = null;
 let isTracking = false;
 const deviceId = uuidv4();
+
+/**
+ * Get current logged-in username (for multi-user remote desktop support).
+ * On Windows RDP/macOS, each user session has its own username.
+ */
+function getCurrentUsername(): string {
+  try {
+    return os.userInfo().username || process.env.USER || process.env.USERNAME || 'unknown';
+  } catch {
+    return process.env.USER || process.env.USERNAME || 'unknown';
+  }
+}
 
 function sendStatus(status: string): void {
   if (mainWindow) mainWindow.webContents.send('status:update', status);
@@ -81,8 +94,10 @@ function setupTracking(username: string): void {
 
   const onEvent = (e: BaseEvent): void => {
     try {
+      // Override username with current logged-in user (for multi-user remote desktop)
+      e.username = getCurrentUsername();
       // Developer log: event queued
-      console.log(`[tracker] queued event: type=${e.type} ts=${e.timestamp}`);
+      console.log(`[tracker] queued event: type=${e.type} user=${e.username} ts=${e.timestamp}`);
     } catch {}
     const shouldFlush = buffer.add(e);
     if (shouldFlush) flushNow().catch(() => {});
@@ -138,16 +153,17 @@ function setupTracking(username: string): void {
       (event, base64) => {
         onEvent(event);
         // fire-and-forget upload, coalesced by server
+        const currentUser = getCurrentUsername();
         apiClient
-          .uploadScreenshot({ deviceId, domain: 'windows-desktop', username, screenshot: base64 })
+          .uploadScreenshot({ deviceId, domain: 'windows-desktop', username: currentUser, screenshot: base64 })
           .then(() => {
             try {
-              console.log('[tracker] screenshot upload: success');
+              console.log(`[tracker] screenshot upload: success (user: ${currentUser})`);
             } catch {}
           })
           .catch((err) => {
             try {
-              console.log('[tracker] screenshot upload: failed', err?.message || err);
+              console.log(`[tracker] screenshot upload: failed (user: ${currentUser})`, err?.message || err);
             } catch {}
           });
       }
