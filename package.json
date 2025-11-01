@@ -1,0 +1,44 @@
+{
+  "name": "windows-activity-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-platform (Windows/macOS/Linux) desktop activity tracker built with Electron and TypeScript",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "npm run clean && tsc",
+    "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
+    "start": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "activity",
+    "tracker",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "active-win": "^9.0.0",
+    "electron-store": "^8.2.0",
+    "screenshot-desktop": "^1.15.1",
+    "systeminformation": "^5.23.7",
+    "uuid": "^9.0.1",
+    "zod": "^3.23.8"
+  },
+  "optionalDependencies": {
+    "iohook": "^0.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "concurrently": "^8.2.2",
+    "electron": "^31.3.1",
+    "rimraf": "^6.0.1",
+    "tslib": "^2.7.0",
+    "typescript": "^5.6.3",
+    "wait-on": "^8.0.2"
+  }
+}
+
+
