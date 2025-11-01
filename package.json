@@ -8,7 +8,46 @@
     "clean": "rimraf dist",
     "build": "npm run clean && tsc",
     "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.activitytracker.app",
+    "productName": "Windows Activity Tracker",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
+    }
   },
   "keywords": [
     "electron",
@@ -34,6 +73,7 @@
     "@types/node": "^22.7.5",
     "concurrently": "^8.2.2",
     "electron": "^31.3.1",
+    "electron-builder": "^24.13.3",
     "rimraf": "^6.0.1",
     "tslib": "^2.7.0",
     "typescript": "^5.6.3",
