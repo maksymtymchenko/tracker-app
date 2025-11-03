@@ -29,6 +29,15 @@ function getCurrentUsername(): string {
   }
 }
 
+function getEffectiveServerUrl(serverUrlFromConfig: string): string {
+  const DEV_URL = 'http://localhost:4000';
+  const PROD_URL = 'https://tracker-dashboard-zw8l.onrender.com';
+  // If user explicitly set a URL, respect it
+  if (serverUrlFromConfig && !/localhost/i.test(serverUrlFromConfig)) return serverUrlFromConfig;
+  // Otherwise choose by environment
+  return app.isPackaged ? PROD_URL : DEV_URL;
+}
+
 function sendStatus(status: string): void {
   if (mainWindow) mainWindow.webContents.send('status:update', status);
 }
@@ -132,7 +141,7 @@ let ioHook: any | null = null;
 function setupTracking(username: string): void {
   const config = ensureConfigFile();
   buffer = new EventBuffer(config.batchSize);
-  apiClient = new ApiClient(config.serverUrl);
+  apiClient = new ApiClient(getEffectiveServerUrl(config.serverUrl));
 
   const onEvent = (e: BaseEvent): void => {
     try {
@@ -236,7 +245,7 @@ async function flushNow(): Promise<void> {
   const events = buffer.drain();
   if (events.length === 0) return;
   const config = ensureConfigFile();
-  apiClient = new ApiClient(config.serverUrl);
+  apiClient = new ApiClient(getEffectiveServerUrl(config.serverUrl));
   try {
     console.log(`[tracker] flushing ${events.length} event(s) to ${config.serverUrl || '(no server)'}`);
     await apiClient.sendActivityBatch(events);

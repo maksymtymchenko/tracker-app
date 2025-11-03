@@ -38,7 +38,9 @@ The app stores configuration at `~/.windows-activity-tracker/config.json`. You c
 
 **Key settings:**
 
-- `serverUrl`: Backend API URL (default: `http://localhost:4000/`)
+- `serverUrl`: Backend API URL
+  - Defaults to `http://localhost:4000` in development
+  - Defaults to `https://tracker-dashboard-zw8l.onrender.com` in production builds
 - `trackingInterval`: Polling interval in ms (default: 10000)
 - `trackClipboard`: Enable clipboard monitoring (default: true)
 - `trackScreenshots`: Enable screenshot capture (default: false)
