@@ -1,108 +1,104 @@
 {
-  "name": "windows-activity-tracker",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Cross-platform (Windows/macOS/Linux) desktop activity tracker built with Electron and TypeScript",
-  "main": "dist/main/main.js",
-  "scripts": {
-    "clean": "rimraf dist",
-    "copy-html": "node scripts/copy-html.js",
-    "build": "npm run clean && tsc && npm run copy-html",
-    "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
-    "start": "electron .",
-    "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:mac": "npm run build && electron-builder --mac"
-  },
-  "build": {
-    "appId": "com.activitytracker.app",
-    "productName": "Windows Activity Tracker",
-    "directories": {
-      "output": "release"
+    "name": "windows-activity-tracker",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Cross-platform (Windows/macOS/Linux) desktop activity tracker built with Electron and TypeScript",
+    "main": "dist/main/main.js",
+    "scripts": {
+        "clean": "rimraf dist",
+        "copy-html": "node scripts/copy-html.js",
+        "build": "npm run clean && tsc && npm run copy-html",
+        "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
+        "start": "electron .",
+        "dist": "npm run build && electron-builder",
+        "dist:win": "npm run build && electron-builder --win",
+        "dist:mac": "npm run build && ./scripts/build-mac.sh --mac"
     },
-    "files": [
-      "dist/**/*",
-      "node_modules/**/*",
-      "package.json"
+    "build": {
+        "appId": "com.activitytracker.app",
+        "productName": "Windows Activity Tracker",
+        "directories": {
+            "output": "release"
+        },
+        "files": [
+            "dist/**/*",
+            "node_modules/**/*",
+            "package.json"
+        ],
+        "win": {
+            "target": [{
+                    "target": "nsis",
+                    "arch": [
+                        "x64"
+                    ]
+                },
+                {
+                    "target": "portable",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ]
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true
+        },
+        "portable": {
+            "artifactName": "${productName}-${version}-portable.exe"
+        },
+        "mac": {
+            "target": [{
+                    "target": "dmg",
+                    "arch": [
+                        "x64",
+                        "arm64"
+                    ]
+                },
+                {
+                    "target": "zip",
+                    "arch": [
+                        "x64",
+                        "arm64"
+                    ]
+                }
+            ],
+            "category": "public.app-category.utilities"
+        },
+        "dmg": {
+            "title": "${productName} ${version}"
+        }
+    },
+    "keywords": [
+        "electron",
+        "activity",
+        "tracker",
+        "typescript"
     ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "axios": "^1.7.7",
+        "active-win": "^9.0.0",
+        "electron-store": "^8.2.0",
+        "screenshot-desktop": "^1.15.1",
+        "systeminformation": "^5.23.7",
+        "uuid": "^9.0.1",
+        "zod": "^3.23.8"
     },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+    "optionalDependencies": {
+        "iohook": "^0.9.3"
     },
-    "portable": {
-      "artifactName": "${productName}-${version}-portable.exe"
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "category": "public.app-category.utilities"
-    },
-    "dmg": {
-      "title": "${productName} ${version}"
+    "devDependencies": {
+        "@types/node": "^22.7.5",
+        "concurrently": "^8.2.2",
+        "electron": "^31.3.1",
+        "electron-builder": "^24.13.3",
+        "rimraf": "^6.0.1",
+        "tslib": "^2.7.0",
+        "typescript": "^5.6.3",
+        "wait-on": "^8.0.2"
     }
-  },
-  "keywords": [
-    "electron",
-    "activity",
-    "tracker",
-    "typescript"
-  ],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "axios": "^1.7.7",
-    "active-win": "^9.0.0",
-    "electron-store": "^8.2.0",
-    "screenshot-desktop": "^1.15.1",
-    "systeminformation": "^5.23.7",
-    "uuid": "^9.0.1",
-    "zod": "^3.23.8"
-  },
-  "optionalDependencies": {
-    "iohook": "^0.9.3"
-  },
-  "devDependencies": {
-    "@types/node": "^22.7.5",
-    "concurrently": "^8.2.2",
-    "electron": "^31.3.1",
-    "electron-builder": "^24.13.3",
-    "rimraf": "^6.0.1",
-    "tslib": "^2.7.0",
-    "typescript": "^5.6.3",
-    "wait-on": "^8.0.2"
-  }
 }
-
-

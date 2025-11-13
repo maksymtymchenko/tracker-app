@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, desktopCapturer } from 'electron';
 contextBridge.exposeInMainWorld('tracker', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   updateConfig: (partial: unknown) => ipcRenderer.invoke('config:update', partial),
+  getUsername: () => ipcRenderer.invoke('username:get'),
   onStatus: (cb: (status: string) => void) => {
     const listener = (_e: unknown, status: string) => cb(status);
     ipcRenderer.on('status:update', listener as any);
@@ -22,6 +23,7 @@ declare global {
     tracker: {
       getConfig: () => Promise<any>;
       updateConfig: (partial: unknown) => Promise<any>;
+      getUsername: () => Promise<string>;
       onStatus: (cb: (status: string) => void) => () => void;
       captureScreenOnce: () => Promise<string>;
     };

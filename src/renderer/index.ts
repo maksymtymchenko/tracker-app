@@ -4,11 +4,12 @@ async function init() {
   const statusBadge = document.getElementById('statusBadge') as HTMLSpanElement;
 
   try {
-    const config = await window.tracker.getConfig();
-    userEl.textContent = `User: ${config.username}`;
+    const username = await window.tracker.getUsername();
+    userEl.textContent = username || 'Unknown user';
     statusEl.textContent = 'Ready';
   } catch (e) {
-    statusEl.textContent = 'Failed to load config';
+    statusEl.textContent = 'Failed to load username';
+    console.error('Failed to load username:', e);
   }
 
   const updateBadge = (text: string) => {

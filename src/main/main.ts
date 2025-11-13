@@ -43,6 +43,13 @@ function sendStatus(status: string): void {
 }
 
 async function createWindow(): Promise<void> {
+  // Prevent creating multiple windows
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  
   const config = ensureConfigFile();
   // Ensure IPC is ready before renderer requests
   registerIpcHandlers();
@@ -58,7 +65,7 @@ async function createWindow(): Promise<void> {
   });
   const isDev = !app.isPackaged;
   if (isDev) {
-    await mainWindow.loadFile(path.join(process.cwd(), 'src/renderer/index.html'));
+    await mainWindow.loadFile(path.join(process.cwd(), 'dist/renderer/index.html'));
   } else {
     // In production, try multiple possible paths (Windows may package differently)
     const possiblePaths = [
@@ -93,8 +100,18 @@ async function createWindow(): Promise<void> {
   }
 
   mainWindow.on('close', (e) => {
-    e.preventDefault();
-    mainWindow?.hide();
+    // On macOS, prevent window from closing (hide instead) unless we're actually quitting
+    if (process.platform === 'darwin' && !isQuitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    } else {
+      // On other platforms or when actually quitting, allow window to close
+      mainWindow = null;
+    }
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
   });
 
   // Open DevTools on Windows if there's an issue (helpful for debugging white screen)
@@ -111,18 +128,38 @@ async function createWindow(): Promise<void> {
 
   // IPC already registered above
 
-  const tray = new TrayController({
-    onStart: () => startTracking(),
-    onStop: () => stopTracking(),
-    onQuit: () => {
-      stopTracking();
-      app.quit();
-    },
-    onShow: () => mainWindow?.show(),
-    onHide: () => mainWindow?.hide(),
-    onCapture: () => screenshotter?.capture('manual').catch(() => {})
-  });
-  tray.init(mainWindow);
+  // Create tray only once
+  if (!trayController) {
+    trayController = new TrayController({
+      onStart: () => startTracking(),
+      onStop: () => stopTracking(),
+      onQuit: () => {
+        isQuitting = true;
+        stopTracking();
+        // Properly destroy window before quitting
+        if (mainWindow) {
+          mainWindow.removeAllListeners('close');
+          mainWindow.destroy();
+          mainWindow = null;
+        }
+        app.quit();
+      },
+      onShow: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        } else {
+          // Recreate window if it doesn't exist
+          createWindow().catch((err) => {
+            console.error('[tracker] failed to recreate window:', err);
+          });
+        }
+      },
+      onHide: () => mainWindow?.hide(),
+      onCapture: () => screenshotter?.capture('manual').catch(() => {})
+    });
+  }
+  trayController.init(mainWindow);
 
   // Initialize trackers but start/stop controlled via tray
   setupTracking(config.username);
@@ -137,11 +174,16 @@ let screenshotter: Screenshotter | null = null;
 let apiClient: ApiClient;
 let flushTimer: NodeJS.Timeout | null = null;
 let ioHook: any | null = null;
+let trayController: TrayController | null = null;
 
 function setupTracking(username: string): void {
   const config = ensureConfigFile();
   buffer = new EventBuffer(config.batchSize);
-  apiClient = new ApiClient(getEffectiveServerUrl(config.serverUrl));
+  const serverUrl = getEffectiveServerUrl(config.serverUrl);
+  apiClient = new ApiClient(serverUrl);
+  if (!serverUrl) {
+    sendStatus('Warning: Server URL not configured');
+  }
 
   const onEvent = (e: BaseEvent): void => {
     try {
@@ -150,8 +192,16 @@ function setupTracking(username: string): void {
       // Developer log: event queued
       console.log(`[tracker] queued event: type=${e.type} user=${e.username} ts=${e.timestamp}`);
     } catch {}
-    const shouldFlush = buffer.add(e);
-    if (shouldFlush) flushNow().catch(() => {});
+    buffer.add(e);
+    const pending = buffer.size();
+    // Always show status when events are queued
+    if (pending > 0) {
+      sendStatus(`Tracking active (${pending} pending)`);
+    }
+    // Check if we should flush immediately
+    if (pending >= config.batchSize) {
+      flushNow().catch(() => {});
+    }
   };
 
   activity = new ActivityTracker(
@@ -238,24 +288,42 @@ function setupTracking(username: string): void {
   }
 
   if (flushTimer) clearInterval(flushTimer);
-  flushTimer = setInterval(() => flushNow().catch(() => {}), Math.max(config.trackingInterval, 5000));
+  // Flush every 5 seconds to ensure events are sent promptly
+  flushTimer = setInterval(() => flushNow().catch(() => {}), 5000);
 }
 
 async function flushNow(): Promise<void> {
   const events = buffer.drain();
-  if (events.length === 0) return;
+  if (events.length === 0) {
+    // Still show status even if no events to flush
+    const pending = buffer.size();
+    if (pending > 0) {
+      sendStatus(`Tracking active (${pending} pending)`);
+    }
+    return;
+  }
   const config = ensureConfigFile();
   apiClient = new ApiClient(getEffectiveServerUrl(config.serverUrl));
   try {
     console.log(`[tracker] flushing ${events.length} event(s) to ${config.serverUrl || '(no server)'}`);
     await apiClient.sendActivityBatch(events);
-    sendStatus(`Sent ${events.length} event(s)`);
     console.log(`[tracker] flush success: ${events.length} event(s)`);
-  } catch {
-    sendStatus('Network error: will retry on next cycle');
-    console.log('[tracker] flush failed: will retry on next cycle');
+    const pending = buffer.size();
+    if (pending > 0) {
+      sendStatus(`Tracking active (${pending} pending)`);
+    } else {
+      sendStatus('Tracking active');
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    sendStatus(`Network error: ${errorMsg}`);
+    console.log('[tracker] flush failed:', errorMsg);
     // On error, re-queue at head by simply pushing back (simple approach)
     events.forEach((e) => buffer.add(e));
+    const pending = buffer.size();
+    if (pending > 0) {
+      sendStatus(`Tracking active (${pending} pending) - retrying`);
+    }
   }
 }
 
@@ -287,14 +355,41 @@ function stopTracking(): void {
   console.log('[tracker] tracking stopped');
 }
 
+// Track if app is quitting to prevent window recreation
+let isQuitting = false;
+
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  // keep app alive in tray (do nothing here)
+  // On macOS, keep app alive even when all windows are closed
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });
 
-app.on('before-quit', async () => {
+// macOS: Recreate window when app is activated and no window exists
+app.on('activate', () => {
+  // Reset quit flag on reactivation
+  isQuitting = false;
+  if (mainWindow === null) {
+    createWindow().catch((err) => {
+      console.error('[tracker] failed to recreate window:', err);
+    });
+  } else {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
+
+app.on('before-quit', async (e) => {
+  isQuitting = true;
+  // Prevent default quit behavior to allow cleanup
   await flushNow().catch(() => {});
+  // Destroy window properly
+  if (mainWindow) {
+    mainWindow.removeAllListeners('close');
+    mainWindow.close();
+  }
 });
 
 

@@ -26,15 +26,29 @@ export class Screenshotter {
     this.lastAt = now;
     if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
     let dataUrl = '';
-    // Preferred: capture via native module in main process
+    // Preferred: capture via native module in main process (no permissions needed)
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const screenshot = require('screenshot-desktop');
       const buf: Buffer = await screenshot({ format: 'png' });
-      dataUrl = nativeImage.createFromBuffer(buf).toDataURL();
-    } catch {
-      // Fallback: ask renderer (may require permissions)
-      dataUrl = await this.opts.requestCapture(reason);
+      if (buf && buf.length > 0) {
+        dataUrl = nativeImage.createFromBuffer(buf).toDataURL();
+      }
+    } catch (err) {
+      // Log error but don't fall back to desktopCapturer on macOS to avoid permission prompts
+      if (process.platform === 'darwin') {
+        console.log('[tracker] screenshot-desktop failed on macOS:', (err as Error).message);
+        // On macOS, don't use desktopCapturer fallback to avoid permission prompts
+        // User should grant Screen Recording permission if screenshot-desktop doesn't work
+        return;
+      }
+      // On other platforms, fallback is safe
+      try {
+        dataUrl = await this.opts.requestCapture(reason);
+      } catch (fallbackErr) {
+        console.log('[tracker] screenshot fallback failed:', (fallbackErr as Error).message);
+        return;
+      }
     }
     if (!dataUrl || !dataUrl.startsWith('data:image')) return;
     const pngBuffer = nativeImage.createFromDataURL(dataUrl).toPNG();

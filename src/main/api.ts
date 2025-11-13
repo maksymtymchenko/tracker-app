@@ -12,12 +12,16 @@ export class ApiClient {
   constructor(private readonly baseUrl: string) {}
 
   async sendActivityBatch(events: BaseEvent[]): Promise<void> {
-    if (!this.baseUrl) return;
+    if (!this.baseUrl) {
+      throw new Error('Server URL not configured');
+    }
     await axios.post(`${this.baseUrl}/collect-activity`, { events });
   }
 
   async uploadScreenshot(body: ScreenshotUploadBody): Promise<void> {
-    if (!this.baseUrl) return;
+    if (!this.baseUrl) {
+      throw new Error('Server URL not configured');
+    }
     await axios.post(`${this.baseUrl}/collect-screenshot`, body, {
       maxBodyLength: Infinity,
       maxContentLength: Infinity
