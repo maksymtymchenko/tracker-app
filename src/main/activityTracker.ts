@@ -68,23 +68,28 @@ export class ActivityTracker {
       const windowChanged = !this.equals(active, this.lastWindow);
       const duration = now - this.lastTimestamp;
       if (windowChanged || (isIdle && !this.idleActive)) {
-        if (duration >= this.opts.minActivityDuration) {
-          const data: WindowActivityData = {
-            application: this.lastWindow.application,
-            title: this.lastWindow.title,
-            duration,
-            isIdle,
-          };
-          const event: BaseEvent = {
-            username: this.opts.username,
-            deviceId: this.opts.deviceId,
-            domain: this.opts.domain,
-            timestamp: new Date().toISOString(),
-            type: "window_activity",
-            durationMs: duration,
-            data,
-          };
-          this.onEvent(event);
+        if (duration >= this.opts.minActivityDuration && this.lastWindow) {
+          try {
+            const data: WindowActivityData = {
+              application: this.lastWindow.application || "Unknown",
+              title: this.lastWindow.title || "",
+              duration,
+              isIdle,
+            };
+            const event: BaseEvent = {
+              username: this.opts.username,
+              deviceId: this.opts.deviceId,
+              domain: this.opts.domain,
+              timestamp: new Date().toISOString(),
+              type: "window_activity",
+              durationMs: duration,
+              data,
+            };
+            this.onEvent(event);
+          } catch (err) {
+            console.error("[tracker] Error creating window activity event:", (err as Error).message);
+            // Continue - don't crash the tracker
+          }
         }
         this.lastWindow = active;
         this.lastTimestamp = now;
@@ -150,16 +155,24 @@ export class ActivityTracker {
           const getActive = mod.default || mod;
           const info = await getActive();
           if (info && info.owner) {
-            return { application: info.owner.name || "Unknown", title: info.title || "" };
+            const appName = info.owner.name || "Unknown";
+            const title = info.title || "";
+            console.log(`[tracker] active-win success: ${appName} - ${title}`);
+            return { application: appName, title: title };
           }
+          console.log(`[tracker] active-win returned no owner info`);
           return null;
         })(),
         new Promise<ActiveWindowInfo | null>((resolve) => {
-          setTimeout(() => resolve(null), 2000);
+          setTimeout(() => {
+            console.log(`[tracker] active-win timeout after 2s`);
+            resolve(null);
+          }, 2000);
         })
       ]);
       return result;
-    } catch {
+    } catch (err) {
+      console.log(`[tracker] active-win error:`, (err as Error).message);
       return null;
     }
   }
@@ -202,19 +215,133 @@ export class ActivityTracker {
       const getActive = mod.default || mod;
       const info = await getActive();
       if (info && info.owner) {
+        const appName = info.owner.name || "Unknown";
+        const title = info.title || "";
+        console.log(`[tracker] active-win detected: ${appName} - ${title}`);
         return {
-          application: info.owner.name || "Unknown",
-          title: info.title || "",
+          application: appName,
+          title: title,
         };
       }
-    } catch {
+    } catch (err) {
+      console.log(`[tracker] active-win failed, using fallback:`, (err as Error).message);
       // ignore and fallback
     }
+    
+    // Fallback: filter out system processes and find user applications
     try {
-      const processes = await si.processes();
-      const top = processes.list.find((p) => (p as any).pcpu ? (p as any).pcpu > 10 : p.cpu > 10) || processes.list[0];
-      return { application: top?.name || "Unknown", title: top?.name || "" };
-    } catch {
+      // Add timeout to prevent hanging on process list
+      const processes = await Promise.race([
+        si.processes(),
+        new Promise<any>((resolve) => {
+          setTimeout(() => {
+            console.log("[tracker] si.processes() timeout after 3s");
+            resolve({ list: [] });
+          }, 3000);
+        })
+      ]);
+      
+      if (!processes || !processes.list || processes.list.length === 0) {
+        console.log("[tracker] No processes available, returning Unknown");
+        return { application: "Unknown", title: "" };
+      }
+      
+      // System processes to exclude
+      const systemProcesses = new Set([
+        "System Idle Process",
+        "System",
+        "smss.exe",
+        "csrss.exe",
+        "wininit.exe",
+        "winlogon.exe",
+        "services.exe",
+        "lsass.exe",
+        "svchost.exe",
+        "dwm.exe",
+        "explorer.exe", // Usually not the active app
+        "conhost.exe",
+        "RuntimeBroker.exe",
+        "SearchIndexer.exe",
+        "SearchProtocolHost.exe",
+        "SearchFilterHost.exe",
+      ]);
+      
+      // Find processes with windows (non-system processes)
+      // Filter by: not a system process, has reasonable CPU/memory usage, is a user application
+      let userProcesses: any[] = [];
+      try {
+        userProcesses = processes.list.filter((p: any) => {
+          try {
+            const processName = p.name || "";
+            
+            // Exclude system processes
+            if (systemProcesses.has(processName)) return false;
+            
+            // Exclude processes with very low memory (likely background/system)
+            if ((p.mem || 0) < 1) return false;
+            
+            // Prefer processes with some CPU activity (but not too high to avoid system processes)
+            const cpu = (p as any).pcpu || p.cpu || 0;
+            if (cpu > 50) return false; // Too high might be system
+            
+            return true;
+          } catch {
+            return false; // Skip invalid processes
+          }
+        });
+      } catch (filterErr) {
+        console.error("[tracker] Error filtering processes:", (filterErr as Error).message);
+        // Continue with empty list
+      }
+      
+      // Sort by memory usage (user apps typically use more memory) or CPU
+      try {
+        userProcesses.sort((a, b) => {
+          try {
+            const memA = a.mem || 0;
+            const memB = b.mem || 0;
+            if (Math.abs(memA - memB) > 10) {
+              return memB - memA; // Higher memory first
+            }
+            // If memory is similar, use CPU
+            const cpuA = (a as any).pcpu || a.cpu || 0;
+            const cpuB = (b as any).pcpu || b.cpu || 0;
+            return cpuB - cpuA;
+          } catch {
+            return 0; // Keep order if comparison fails
+          }
+        });
+      } catch (sortErr) {
+        console.error("[tracker] Error sorting processes:", (sortErr as Error).message);
+        // Continue without sorting
+      }
+      
+      const top = userProcesses[0];
+      if (top && top.name) {
+        const appName = top.name || "Unknown";
+        console.log(`[tracker] fallback detected: ${appName} (mem: ${top.mem}MB, cpu: ${(top as any).pcpu || top.cpu}%)`);
+        return { application: appName, title: appName };
+      }
+      
+      // Last resort: return first non-system process
+      try {
+        const firstNonSystem = processes.list.find((p: any) => {
+          const name = p.name || "";
+          return name && !systemProcesses.has(name);
+        });
+        if (firstNonSystem && firstNonSystem.name) {
+          console.log(`[tracker] fallback last resort: ${firstNonSystem.name}`);
+          return { application: firstNonSystem.name, title: firstNonSystem.name };
+        }
+      } catch {
+        // Ignore errors in last resort
+      }
+      
+      console.log("[tracker] No suitable process found, returning Unknown");
+      return { application: "Unknown", title: "" };
+    } catch (err) {
+      console.error("[tracker] Windows fallback error:", (err as Error).message, err);
+      // Return empty to prevent crash
       return { application: "Unknown", title: "" };
     }
   }
