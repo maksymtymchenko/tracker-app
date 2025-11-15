@@ -2,7 +2,7 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 import { app, BrowserWindow, ipcMain } from "electron";
-import { ensureConfigFile } from "./config";
+import { ensureConfigFile, updateConfig } from "./config";
 import { registerIpcHandlers } from "./ipc";
 import { TrayController } from "./tray";
 import { EventBuffer } from "./buffer";
@@ -46,6 +46,38 @@ function getEffectiveServerUrl(serverUrlFromConfig: string): string {
 
 function sendStatus(status: string): void {
   if (mainWindow) mainWindow.webContents.send("status:update", status);
+}
+
+/**
+ * Configure app to start on system boot (Windows/macOS)
+ */
+function configureStartup(enabled: boolean): void {
+  try {
+    // On Windows, this adds the app to the startup folder
+    // On macOS, this adds it to Login Items
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      openAsHidden: true, // Start minimized to tray
+    });
+    console.log(`[tracker] Startup ${enabled ? "enabled" : "disabled"}`);
+  } catch (err) {
+    console.error(
+      `[tracker] Failed to ${enabled ? "enable" : "disable"} startup:`,
+      (err as Error).message
+    );
+  }
+}
+
+/**
+ * Check if app is currently set to start on boot
+ */
+function isStartupEnabled(): boolean {
+  try {
+    const settings = app.getLoginItemSettings();
+    return settings.openAtLogin || false;
+  } catch {
+    return false;
+  }
 }
 
 async function createWindow(): Promise<void> {
@@ -177,6 +209,26 @@ async function createWindow(): Promise<void> {
       },
       onHide: () => mainWindow?.hide(),
       onCapture: () => screenshotter?.capture("manual").catch(() => {}),
+      onToggleStartup: () => {
+        if (process.platform === "win32" || process.platform === "darwin") {
+          const current = isStartupEnabled();
+          const newValue = !current;
+          configureStartup(newValue);
+          // Update config
+          const config = ensureConfigFile();
+          updateConfig({ ...config, startOnBoot: newValue });
+          // Refresh tray menu
+          if (trayController && mainWindow) {
+            trayController.updateMenu(mainWindow);
+          }
+        }
+      },
+      isStartupEnabled: () => {
+        if (process.platform === "win32" || process.platform === "darwin") {
+          return isStartupEnabled();
+        }
+        return false;
+      },
     });
   }
   trayController.init(mainWindow);
@@ -431,7 +483,14 @@ function stopTracking(): void {
 // Track if app is quitting to prevent window recreation
 let isQuitting = false;
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // Configure startup on Windows/macOS based on config
+  const config = ensureConfigFile();
+  if (process.platform === "win32" || process.platform === "darwin") {
+    configureStartup(config.startOnBoot);
+  }
+  createWindow();
+});
 
 app.on("window-all-closed", () => {
   // On macOS, keep app alive even when all windows are closed
