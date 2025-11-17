@@ -12,6 +12,7 @@ import { Screenshotter } from "./screenshotter";
 import { ApiClient } from "./api";
 import { BaseEvent } from "../types/events";
 import { v4 as uuidv4 } from "uuid";
+import { logger } from "./logger";
 
 let mainWindow: BrowserWindow | null = null;
 let isTracking = false;
@@ -208,7 +209,28 @@ async function createWindow(): Promise<void> {
         }
       },
       onHide: () => mainWindow?.hide(),
-      onCapture: () => screenshotter?.capture("manual").catch(() => {}),
+      onCapture: () => {
+        logger.log("[tracker] Manual screenshot requested from tray menu");
+        logger.log(`[tracker] Log file location: ${logger.getLogPath()}`);
+        if (screenshotter) {
+          screenshotter.capture("manual").catch((err) => {
+            logger.error(
+              "[tracker] Manual screenshot capture failed:",
+              (err as Error).message
+            );
+            if ((err as Error).stack) {
+              logger.error(
+                "[tracker] Manual screenshot error stack:",
+                (err as Error).stack
+              );
+            }
+          });
+        } else {
+          logger.error(
+            "[tracker] ERROR: screenshotter is null! Screenshots may not be enabled in config."
+          );
+        }
+      },
       onToggleStartup: () => {
         if (process.platform === "win32" || process.platform === "darwin") {
           const current = isStartupEnabled();
@@ -296,6 +318,114 @@ function setupTracking(username: string): void {
     }
   };
 
+  // Create screenshotter FIRST so it's available when activity tracker callback fires
+  if (config.trackScreenshots) {
+    screenshotter = new Screenshotter(
+      {
+        username,
+        deviceId,
+        domain: "windows-desktop",
+        minIntervalMs: config.minScreenshotInterval,
+        requestCapture: (reason: string) =>
+          new Promise<string>((resolve) => {
+            if (!mainWindow) {
+              console.log(
+                "[tracker] screenshot fallback: mainWindow is null, cannot use renderer fallback"
+              );
+              return resolve("");
+            }
+
+            let timeout: NodeJS.Timeout;
+            const once = (
+              _e: any,
+              payload: {
+                dataUrl: string;
+                reason: string;
+                meta?: any;
+                error?: string;
+              }
+            ) => {
+              clearTimeout(timeout);
+              try {
+                console.log("[tracker] screenshot: result", {
+                  len: payload?.dataUrl?.length || 0,
+                  reason: payload?.reason,
+                  meta: payload?.meta,
+                  error: payload?.error,
+                });
+                if (payload?.error) {
+                  console.log(
+                    `[tracker] screenshot: renderer error: ${payload.error}`
+                  );
+                }
+              } catch {}
+              resolve(payload?.dataUrl || "");
+              ipcMain.removeListener("screenshot:result", once as any);
+            };
+
+            timeout = setTimeout(() => {
+              console.log(
+                "[tracker] screenshot fallback: timeout waiting for renderer response"
+              );
+              ipcMain.removeListener("screenshot:result", once as any);
+              resolve("");
+            }, 10000); // 10 second timeout
+
+            console.log("[tracker] screenshot: ipc request -> renderer");
+            ipcMain.on("screenshot:result", once as any);
+            mainWindow.webContents.send("screenshot:request", reason);
+          }),
+      },
+      (event, base64) => {
+        onEvent(event);
+        // fire-and-forget upload, coalesced by server
+        const currentUser = getCurrentUsername();
+        const base64Length = base64 ? base64.length : 0;
+        console.log(
+          `[tracker] Uploading screenshot: ${base64Length} bytes, user: ${currentUser}, reason: ${
+            (event.data as any)?.reason || "unknown"
+          }`
+        );
+        apiClient
+          .uploadScreenshot({
+            deviceId,
+            domain: "windows-desktop",
+            username: currentUser,
+            screenshot: base64,
+          })
+          .then(() => {
+            try {
+              console.log(
+                `[tracker] screenshot upload: SUCCESS (user: ${currentUser}, size: ${base64Length} bytes)`
+              );
+            } catch {}
+          })
+          .catch((err) => {
+            try {
+              const errorMsg = err?.message || err || "Unknown error";
+              const statusCode = err?.response?.status;
+              const statusText = err?.response?.statusText;
+              console.log(
+                `[tracker] screenshot upload: FAILED (user: ${currentUser}, size: ${base64Length} bytes)`
+              );
+              console.log(
+                `[tracker] screenshot upload error: ${errorMsg}${
+                  statusCode ? ` (HTTP ${statusCode} ${statusText})` : ""
+                }`
+              );
+              if (err?.response?.data) {
+                console.log(
+                  `[tracker] screenshot upload error response:`,
+                  err.response.data
+                );
+              }
+            } catch {}
+          });
+      }
+    );
+  }
+
+  // Create activity tracker AFTER screenshotter so it can reference it
   activity = new ActivityTracker(
     {
       username,
@@ -309,7 +439,18 @@ function setupTracking(username: string): void {
       onEvent(e);
       if (config.trackScreenshots && config.screenshotOnWindowChange) {
         console.log("[tracker] screenshot: request on window_change");
-        screenshotter?.capture("window_change").catch(() => {});
+        if (screenshotter) {
+          screenshotter.capture("window_change").catch((err) => {
+            console.error(
+              "[tracker] screenshot capture error:",
+              (err as Error).message
+            );
+          });
+        } else {
+          console.log(
+            "[tracker] WARNING: screenshotter is null when window change detected!"
+          );
+        }
       }
     }
   );
@@ -324,71 +465,6 @@ function setupTracking(username: string): void {
         maxLength: 1000,
       },
       onEvent
-    );
-  }
-
-  if (config.trackScreenshots) {
-    screenshotter = new Screenshotter(
-      {
-        username,
-        deviceId,
-        domain: "windows-desktop",
-        minIntervalMs: config.minScreenshotInterval,
-        requestCapture: (reason: string) =>
-          new Promise<string>((resolve) => {
-            if (!mainWindow) return resolve("");
-            const once = (
-              _e: any,
-              payload: {
-                dataUrl: string;
-                reason: string;
-                meta?: any;
-                error?: string;
-              }
-            ) => {
-              try {
-                console.log("[tracker] screenshot: result", {
-                  len: payload?.dataUrl?.length || 0,
-                  reason: payload?.reason,
-                  meta: payload?.meta,
-                  error: payload?.error,
-                });
-              } catch {}
-              resolve(payload?.dataUrl || "");
-              ipcMain.removeListener("screenshot:result", once as any);
-            };
-            console.log("[tracker] screenshot: ipc request -> renderer");
-            ipcMain.on("screenshot:result", once as any);
-            mainWindow.webContents.send("screenshot:request", reason);
-          }),
-      },
-      (event, base64) => {
-        onEvent(event);
-        // fire-and-forget upload, coalesced by server
-        const currentUser = getCurrentUsername();
-        apiClient
-          .uploadScreenshot({
-            deviceId,
-            domain: "windows-desktop",
-            username: currentUser,
-            screenshot: base64,
-          })
-          .then(() => {
-            try {
-              console.log(
-                `[tracker] screenshot upload: success (user: ${currentUser})`
-              );
-            } catch {}
-          })
-          .catch((err) => {
-            try {
-              console.log(
-                `[tracker] screenshot upload: failed (user: ${currentUser})`,
-                err?.message || err
-              );
-            } catch {}
-          });
-      }
     );
   }
 
@@ -486,6 +562,8 @@ let isQuitting = false;
 app.whenReady().then(() => {
   // Configure startup on Windows/macOS based on config
   const config = ensureConfigFile();
+  logger.log(`App starting - Log file: ${logger.getLogPath()}`);
+  logger.log(`Platform: ${process.platform}, Packaged: ${app.isPackaged}`);
   if (process.platform === "win32" || process.platform === "darwin") {
     configureStartup(config.startOnBoot);
   }

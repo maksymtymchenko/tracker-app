@@ -7,7 +7,9 @@
     "scripts": {
         "clean": "rimraf dist",
         "copy-html": "node scripts/copy-html.js",
+        "rebuild": "electron-rebuild -f -w screenshot-desktop",
         "build": "npm run clean && tsc && npm run copy-html",
+        "build:rebuild": "npm run build && npm run rebuild",
         "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
         "start": "electron .",
         "dist": "npm run build && electron-builder",
@@ -24,6 +26,9 @@
             "dist/**/*",
             "node_modules/**/*",
             "package.json"
+        ],
+        "asarUnpack": [
+            "**/node_modules/screenshot-desktop/**/*"
         ],
         "win": {
             "target": [{
@@ -96,6 +101,7 @@
         "concurrently": "^8.2.2",
         "electron": "^31.3.1",
         "electron-builder": "^24.13.3",
+        "electron-rebuild": "^3.2.9",
         "rimraf": "^6.0.1",
         "tslib": "^2.7.0",
         "typescript": "^5.6.3",
