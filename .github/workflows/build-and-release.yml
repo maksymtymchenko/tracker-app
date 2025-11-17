@@ -1,0 +1,170 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on version tags like v0.1.0, v1.0.0, etc.
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+            # Remove 'v' prefix if present
+            VERSION=${VERSION#v}
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Build Windows executables
+        run: npm run dist:win
+
+      - name: Install AWS CLI
+        run: |
+          choco install awscli -y
+
+      - name: Upload to Cloudflare R2
+        env:
+          CLOUDFLARE_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_ACCESS_KEY_ID }}
+          CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        shell: pwsh
+        run: |
+          # Configure AWS CLI for Cloudflare R2
+          aws configure set aws_access_key_id $env:CLOUDFLARE_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $env:CLOUDFLARE_SECRET_ACCESS_KEY
+          
+          # Upload latest.yml
+          if (Test-Path "release\latest.yml") {
+            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/latest-win.yml" `
+              --endpoint-url "$env:R2_ENDPOINT" `
+              --content-type "text/yaml"
+            
+            # Also upload as latest.yml for generic provider
+            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/latest.yml" `
+              --endpoint-url "$env:R2_ENDPOINT" `
+              --content-type "text/yaml"
+          }
+          
+          # Upload all .exe files
+          Get-ChildItem -Path "release" -Filter "*.exe" | ForEach-Object {
+            Write-Host "Uploading $($_.Name)"
+            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/$($_.Name)" `
+              --endpoint-url "$env:R2_ENDPOINT"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: release/*.exe
+          retention-days: 30
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+            # Remove 'v' prefix if present
+            VERSION=${VERSION#v}
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Build macOS app
+        run: npm run dist:mac
+
+      - name: Install AWS CLI
+        run: |
+          brew install awscli || pip3 install awscli
+
+      - name: Upload to Cloudflare R2
+        env:
+          CLOUDFLARE_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_ACCESS_KEY_ID }}
+          CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          # Configure AWS CLI for Cloudflare R2
+          aws configure set aws_access_key_id $CLOUDFLARE_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $CLOUDFLARE_SECRET_ACCESS_KEY
+          
+          # Upload latest-mac.yml
+          if [ -f "release/latest-mac.yml" ]; then
+            aws s3 cp "release/latest-mac.yml" "s3://$R2_BUCKET_NAME/latest-mac.yml" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/yaml"
+          fi
+          
+          # Upload all DMG files
+          for dmg in release/*.dmg; do
+            if [ -f "$dmg" ]; then
+              echo "Uploading $(basename "$dmg")"
+              aws s3 cp "$dmg" "s3://$R2_BUCKET_NAME/$(basename "$dmg")" \
+                --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+          
+          # Upload all ZIP files
+          for zip in release/*-mac.zip; do
+            if [ -f "$zip" ]; then
+              echo "Uploading $(basename "$zip")"
+              aws s3 cp "$zip" "s3://$R2_BUCKET_NAME/$(basename "$zip")" \
+                --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: release/*.{dmg,zip}
+          retention-days: 30
+

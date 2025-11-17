@@ -31,7 +31,8 @@
             "**/node_modules/screenshot-desktop/**/*"
         ],
         "win": {
-            "target": [{
+            "target": [
+                {
                     "target": "nsis",
                     "arch": [
                         "x64"
@@ -55,7 +56,8 @@
             "artifactName": "${productName}-${version}-portable.exe"
         },
         "mac": {
-            "target": [{
+            "target": [
+                {
                     "target": "dmg",
                     "arch": [
                         "x64",
@@ -74,7 +76,16 @@
         },
         "dmg": {
             "title": "${productName} ${version}"
-        }
+        },
+        "publish": [
+            {
+                "provider": "s3",
+                "bucket": "tracker-app-auto-update",
+                "region": "auto",
+                "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+                "channel": "latest"
+            }
+        ]
     },
     "keywords": [
         "electron",
@@ -85,9 +96,10 @@
     "author": "",
     "license": "MIT",
     "dependencies": {
-        "axios": "^1.7.7",
         "active-win": "^9.0.0",
+        "axios": "^1.7.7",
         "electron-store": "^8.2.0",
+        "electron-updater": "^6.6.2",
         "screenshot-desktop": "^1.15.1",
         "systeminformation": "^5.23.7",
         "uuid": "^9.0.1",

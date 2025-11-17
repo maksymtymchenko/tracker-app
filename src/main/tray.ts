@@ -10,6 +10,7 @@ export interface TrayControllerOptions {
   onHide: () => void;
   onCapture?: () => void;
   onToggleStartup?: () => void;
+  onCheckForUpdates?: () => void;
   isStartupEnabled?: () => boolean;
 }
 
@@ -161,6 +162,12 @@ export class TrayController {
       { label: "Start Tracking", click: this.opts.onStart },
       { label: "Stop Tracking", click: this.opts.onStop },
       { type: "separator" },
+      ...(this.opts.onCheckForUpdates
+        ? ([
+            { label: "Check for Updates", click: this.opts.onCheckForUpdates },
+            { type: "separator" },
+          ] as any)
+        : []),
       ...(this.opts.onToggleStartup
         ? ([
             {

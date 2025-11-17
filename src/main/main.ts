@@ -13,6 +13,8 @@ import { ApiClient } from "./api";
 import { BaseEvent } from "../types/events";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "./logger";
+import { AutoUpdater } from "./autoUpdater";
+import { setAutoUpdaterInstance } from "./ipc";
 
 let mainWindow: BrowserWindow | null = null;
 let isTracking = false;
@@ -245,6 +247,13 @@ async function createWindow(): Promise<void> {
           }
         }
       },
+      onCheckForUpdates: () => {
+        if (autoUpdater) {
+          autoUpdater.checkForUpdates().catch((err) => {
+            logger.error('[updater] Manual check failed:', (err as Error).message);
+          });
+        }
+      },
       isStartupEnabled: () => {
         if (process.platform === "win32" || process.platform === "darwin") {
           return isStartupEnabled();
@@ -269,6 +278,7 @@ let apiClient: ApiClient;
 let flushTimer: NodeJS.Timeout | null = null;
 let ioHook: any | null = null;
 let trayController: TrayController | null = null;
+let autoUpdater: AutoUpdater | null = null;
 
 function setupTracking(username: string): void {
   const config = ensureConfigFile();
@@ -567,6 +577,17 @@ app.whenReady().then(() => {
   if (process.platform === "win32" || process.platform === "darwin") {
     configureStartup(config.startOnBoot);
   }
+  
+  // Initialize and start auto-updater
+  try {
+    autoUpdater = new AutoUpdater();
+    setAutoUpdaterInstance(autoUpdater);
+    autoUpdater.start();
+    logger.log('[updater] Auto-updater initialized');
+  } catch (err) {
+    logger.error('[updater] Failed to initialize auto-updater:', (err as Error).message);
+  }
+  
   createWindow();
 });
 
