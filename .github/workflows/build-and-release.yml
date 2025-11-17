@@ -2,15 +2,18 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
-      - 'v*' # Triggers on version tags like v0.1.0, v1.0.0, etc.
+      - "v*" # Triggers on version tags like v0.1.0, v1.0.0, etc.
   workflow_dispatch: # Allows manual triggering
 
 jobs:
   build-windows:
     name: Build Windows
     runs-on: windows-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,8 +21,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: "18"
+          cache: "npm"
 
       - name: Get version
         id: version
@@ -29,10 +32,13 @@ jobs:
             # Remove 'v' prefix if present
             VERSION=${VERSION#v}
           else
+            # For branch pushes, use version from package.json
             VERSION=$(node -p "require('./package.json').version")
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+          echo "Ref: ${{ github.ref }}"
+          echo "Ref type: ${{ github.ref_type }}"
 
       - name: Install dependencies
         run: npm ci
@@ -58,7 +64,7 @@ jobs:
           # Configure AWS CLI for Cloudflare R2
           aws configure set aws_access_key_id $env:CLOUDFLARE_ACCESS_KEY_ID
           aws configure set aws_secret_access_key $env:CLOUDFLARE_SECRET_ACCESS_KEY
-          
+
           # Upload latest.yml
           if (Test-Path "release\latest.yml") {
             aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/latest-win.yml" `
@@ -70,7 +76,7 @@ jobs:
               --endpoint-url "$env:R2_ENDPOINT" `
               --content-type "text/yaml"
           }
-          
+
           # Upload all .exe files
           Get-ChildItem -Path "release" -Filter "*.exe" | ForEach-Object {
             Write-Host "Uploading $($_.Name)"
@@ -88,7 +94,7 @@ jobs:
   build-macos:
     name: Build macOS
     runs-on: macos-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -96,8 +102,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: "18"
+          cache: "npm"
 
       - name: Get version
         id: version
@@ -107,10 +113,13 @@ jobs:
             # Remove 'v' prefix if present
             VERSION=${VERSION#v}
           else
+            # For branch pushes, use version from package.json
             VERSION=$(node -p "require('./package.json').version")
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+          echo "Ref: ${{ github.ref }}"
+          echo "Ref type: ${{ github.ref_type }}"
 
       - name: Install dependencies
         run: npm ci
@@ -135,14 +144,14 @@ jobs:
           # Configure AWS CLI for Cloudflare R2
           aws configure set aws_access_key_id $CLOUDFLARE_ACCESS_KEY_ID
           aws configure set aws_secret_access_key $CLOUDFLARE_SECRET_ACCESS_KEY
-          
+
           # Upload latest-mac.yml
           if [ -f "release/latest-mac.yml" ]; then
             aws s3 cp "release/latest-mac.yml" "s3://$R2_BUCKET_NAME/latest-mac.yml" \
               --endpoint-url "$R2_ENDPOINT" \
               --content-type "text/yaml"
           fi
-          
+
           # Upload all DMG files
           for dmg in release/*.dmg; do
             if [ -f "$dmg" ]; then
@@ -151,7 +160,7 @@ jobs:
                 --endpoint-url "$R2_ENDPOINT"
             fi
           done
-          
+
           # Upload all ZIP files
           for zip in release/*-mac.zip; do
             if [ -f "$zip" ]; then
@@ -167,4 +176,3 @@ jobs:
           name: macos-build
           path: release/*.{dmg,zip}
           retention-days: 30
-
