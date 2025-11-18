@@ -14,7 +14,13 @@
         "start": "electron .",
         "dist": "npm run build && electron-builder",
         "dist:win": "npm run build && electron-builder --win",
-        "dist:mac": "npm run build && ./scripts/build-mac.sh --mac"
+        "dist:mac": "npm run build && ./scripts/build-mac.sh --mac",
+        "version:patch": "npm version patch --no-git-tag-version",
+        "version:minor": "npm version minor --no-git-tag-version",
+        "version:major": "npm version major --no-git-tag-version",
+        "release:patch": "node scripts/release.js patch",
+        "release:minor": "node scripts/release.js minor",
+        "release:major": "node scripts/release.js major"
     },
     "build": {
         "appId": "com.activitytracker.app",
@@ -31,8 +37,7 @@
             "**/node_modules/screenshot-desktop/**/*"
         ],
         "win": {
-            "target": [
-                {
+            "target": [{
                     "target": "nsis",
                     "arch": [
                         "x64"
@@ -56,8 +61,7 @@
             "artifactName": "${productName}-${version}-portable.exe"
         },
         "mac": {
-            "target": [
-                {
+            "target": [{
                     "target": "dmg",
                     "arch": [
                         "x64",
@@ -77,15 +81,13 @@
         "dmg": {
             "title": "${productName} ${version}"
         },
-        "publish": [
-            {
-                "provider": "s3",
-                "bucket": "tracker-app-auto-update",
-                "region": "auto",
-                "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-                "channel": "latest"
-            }
-        ]
+        "publish": [{
+            "provider": "s3",
+            "bucket": "tracker-app-auto-update",
+            "region": "auto",
+            "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+            "channel": "latest"
+        }]
     },
     "keywords": [
         "electron",
