@@ -58,16 +58,24 @@ function configureStartup(enabled: boolean): void {
   try {
     // On Windows, this adds the app to the startup folder
     // On macOS, this adds it to Login Items
+    // Note: In dev mode on macOS, this may fail due to missing app signing
     app.setLoginItemSettings({
       openAtLogin: enabled,
       openAsHidden: true, // Start minimized to tray
     });
     console.log(`[tracker] Startup ${enabled ? "enabled" : "disabled"}`);
   } catch (err) {
-    console.error(
-      `[tracker] Failed to ${enabled ? "enable" : "disable"} startup:`,
-      (err as Error).message
-    );
+    // In dev mode, this is expected to fail on macOS
+    if (app.isPackaged) {
+      console.error(
+        `[tracker] Failed to ${enabled ? "enable" : "disable"} startup:`,
+        (err as Error).message
+      );
+    } else {
+      console.log(
+        `[tracker] Startup setting skipped in dev mode: ${(err as Error).message}`
+      );
+    }
   }
 }
 
@@ -490,7 +498,13 @@ function setupTracking(username: string): void {
       ioHook.start();
       console.log("[tracker] iohook: click listener started");
     } catch (e) {
-      console.log("[tracker] iohook not available:", (e as Error).message);
+      // iohook is optional and may not be available in dev mode
+      // Only log once, not on every require attempt
+      if (!app.isPackaged) {
+        console.log("[tracker] iohook not available (optional dependency):", (e as Error).message);
+      } else {
+        console.log("[tracker] iohook not available:", (e as Error).message);
+      }
     }
   }
 
