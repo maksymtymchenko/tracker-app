@@ -66,29 +66,29 @@ jobs:
           aws configure set aws_access_key_id $env:CLOUDFLARE_ACCESS_KEY_ID
           aws configure set aws_secret_access_key $env:CLOUDFLARE_SECRET_ACCESS_KEY
 
-          # Upload latest.yml to tracker-app-auto-update subdirectory
+          # Upload latest.yml to tracker-app-auto-update/tracker-app-auto-update subdirectory
           if (Test-Path "release\latest.yml") {
-            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/latest-win.yml" `
+            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/latest-win.yml" `
               --endpoint-url "$env:R2_ENDPOINT" `
               --content-type "text/yaml"
             
             # Also upload as latest.yml for generic provider
-            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/latest.yml" `
+            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/latest.yml" `
               --endpoint-url "$env:R2_ENDPOINT" `
               --content-type "text/yaml"
           }
 
-          # Upload all .exe files to tracker-app-auto-update subdirectory
+          # Upload all .exe files to tracker-app-auto-update/tracker-app-auto-update subdirectory
           Get-ChildItem -Path "release" -Filter "*.exe" | ForEach-Object {
             Write-Host "Uploading $($_.Name)"
-            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/$($_.Name)" `
+            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/$($_.Name)" `
               --endpoint-url "$env:R2_ENDPOINT"
           }
 
           # Upload .blockmap files if they exist
           Get-ChildItem -Path "release" -Filter "*.blockmap" | ForEach-Object {
             Write-Host "Uploading $($_.Name)"
-            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/$($_.Name)" `
+            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/$($_.Name)" `
               --endpoint-url "$env:R2_ENDPOINT"
           }
 
@@ -153,27 +153,27 @@ jobs:
           aws configure set aws_access_key_id $CLOUDFLARE_ACCESS_KEY_ID
           aws configure set aws_secret_access_key $CLOUDFLARE_SECRET_ACCESS_KEY
 
-          # Upload latest-mac.yml to tracker-app-auto-update subdirectory
+          # Upload latest-mac.yml to tracker-app-auto-update/tracker-app-auto-update subdirectory
           if [ -f "release/latest-mac.yml" ]; then
-            aws s3 cp "release/latest-mac.yml" "s3://$R2_BUCKET_NAME/tracker-app-auto-update/latest-mac.yml" \
+            aws s3 cp "release/latest-mac.yml" "s3://$R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/latest-mac.yml" \
               --endpoint-url "$R2_ENDPOINT" \
               --content-type "text/yaml"
           fi
 
-          # Upload all DMG files to tracker-app-auto-update subdirectory
+          # Upload all DMG files to tracker-app-auto-update/tracker-app-auto-update subdirectory
           for dmg in release/*.dmg; do
             if [ -f "$dmg" ]; then
               echo "Uploading $(basename "$dmg")"
-              aws s3 cp "$dmg" "s3://$R2_BUCKET_NAME/tracker-app-auto-update/$(basename "$dmg")" \
+              aws s3 cp "$dmg" "s3://$R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/$(basename "$dmg")" \
                 --endpoint-url "$R2_ENDPOINT"
             fi
           done
 
-          # Upload all ZIP files to tracker-app-auto-update subdirectory
+          # Upload all ZIP files to tracker-app-auto-update/tracker-app-auto-update subdirectory
           for zip in release/*-mac.zip; do
             if [ -f "$zip" ]; then
               echo "Uploading $(basename "$zip")"
-              aws s3 cp "$zip" "s3://$R2_BUCKET_NAME/tracker-app-auto-update/$(basename "$zip")" \
+              aws s3 cp "$zip" "s3://$R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/$(basename "$zip")" \
                 --endpoint-url "$R2_ENDPOINT"
             fi
           done
