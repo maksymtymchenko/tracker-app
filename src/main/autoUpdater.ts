@@ -22,7 +22,7 @@ export class AutoUpdater {
     // Include subdirectory path if files are in a subdirectory
     const updateServerUrl =
       process.env.UPDATE_SERVER_URL ||
-      "https://pub-783c37b34b55408d998282fd1a2781f6.r2.dev/tracker-app-auto-update/tracker-app-auto-update";
+      "https://pub-783c37b34b55408d998282fd1a2781f6.r2.dev/tracker-app-auto-update";
 
     electronAutoUpdater.setFeedURL({
       provider: "generic",
