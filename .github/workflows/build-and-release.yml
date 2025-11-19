@@ -66,29 +66,29 @@ jobs:
           aws configure set aws_access_key_id $env:CLOUDFLARE_ACCESS_KEY_ID
           aws configure set aws_secret_access_key $env:CLOUDFLARE_SECRET_ACCESS_KEY
 
-          # Upload latest.yml to tracker-app-auto-update/tracker-app-auto-update subdirectory
+          # Upload latest.yml to tracker-app-auto-update subdirectory
           if (Test-Path "release\latest.yml") {
-            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/latest-win.yml" `
+            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/latest-win.yml" `
               --endpoint-url "$env:R2_ENDPOINT" `
               --content-type "text/yaml"
             
             # Also upload as latest.yml for generic provider
-            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/latest.yml" `
+            aws s3 cp "release\latest.yml" "s3://$env:R2_BUCKET_NAME/latest.yml" `
               --endpoint-url "$env:R2_ENDPOINT" `
               --content-type "text/yaml"
           }
 
-          # Upload all .exe files to tracker-app-auto-update/tracker-app-auto-update subdirectory
+          # Upload all .exe files to tracker-app-auto-update subdirectory
           Get-ChildItem -Path "release" -Filter "*.exe" | ForEach-Object {
             Write-Host "Uploading $($_.Name)"
-            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/$($_.Name)" `
+            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/$($_.Name)" `
               --endpoint-url "$env:R2_ENDPOINT"
           }
 
           # Upload .blockmap files if they exist
           Get-ChildItem -Path "release" -Filter "*.blockmap" | ForEach-Object {
             Write-Host "Uploading $($_.Name)"
-            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/tracker-app-auto-update/tracker-app-auto-update/$($_.Name)" `
+            aws s3 cp $_.FullName "s3://$env:R2_BUCKET_NAME/$($_.Name)" `
               --endpoint-url "$env:R2_ENDPOINT"
           }
 
