@@ -83,7 +83,7 @@
         },
         "publish": [{
             "provider": "s3",
-            "bucket": "tracker-app-auto-update",
+            "bucket": "pub-783c37b34b55408d998282fd1a2781f6",
             "region": "auto",
             "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
             "channel": "latest"

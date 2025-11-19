@@ -1,6 +1,6 @@
-import { autoUpdater as electronAutoUpdater } from 'electron-updater';
-import { app, dialog } from 'electron';
-import { logger } from './logger';
+import { autoUpdater as electronAutoUpdater } from "electron-updater";
+import { app, dialog } from "electron";
+import { logger } from "./logger";
 
 /**
  * Auto-updater configuration for Cloudflare R2 bucket
@@ -19,11 +19,13 @@ export class AutoUpdater {
     // For Cloudflare R2 public bucket, use: https://<bucket-name>.r2.dev
     // Or custom domain: https://<your-domain.com>
     // The bucket should contain latest.yml (or latest-mac.yml, latest-win.yml) files
-    const updateServerUrl = process.env.UPDATE_SERVER_URL || 
-      'https://pub-783c37b34b55408d998282fd1a2781f6.r2.dev';
-    
+    // Include subdirectory path if files are in a subdirectory
+    const updateServerUrl =
+      process.env.UPDATE_SERVER_URL ||
+      "https://pub-783c37b34b55408d998282fd1a2781f6.r2.dev/tracker-app-auto-update";
+
     electronAutoUpdater.setFeedURL({
-      provider: 'generic',
+      provider: "generic",
       url: updateServerUrl,
     });
 
@@ -35,33 +37,51 @@ export class AutoUpdater {
    * Setup auto-updater event handlers
    */
   private setupEventHandlers(): void {
-    electronAutoUpdater.on('checking-for-update', () => {
-      logger.log('[updater] Checking for updates...');
+    electronAutoUpdater.on("checking-for-update", () => {
+      logger.log("[updater] Checking for updates...");
     });
 
-    electronAutoUpdater.on('update-available', (info) => {
+    electronAutoUpdater.on("update-available", (info) => {
       logger.log(`[updater] Update available: ${info.version}`);
       this.showUpdateAvailableDialog(info);
     });
 
-    electronAutoUpdater.on('update-not-available', (info) => {
-      logger.log(`[updater] Update not available. Current version: ${info.version}`);
+    electronAutoUpdater.on("update-not-available", (info) => {
+      logger.log(
+        `[updater] Update not available. Current version: ${info.version}`
+      );
       // Optionally show a message for manual checks
       // For automatic checks, we stay silent
     });
 
-    electronAutoUpdater.on('error', (err) => {
-      logger.error('[updater] Error checking for updates:', err.message);
+    electronAutoUpdater.on("error", (err) => {
+      // Check if it's a 404 error (update file not found)
+      const errorMessage = err.message || "";
+      const is404Error =
+        errorMessage.includes("404") ||
+        errorMessage.includes("Not Found") ||
+        errorMessage.includes("Cannot find channel");
+
+      if (is404Error) {
+        // 404 means no update file exists yet - this is normal for first release
+        // or when update server hasn't been set up yet
+        logger.log(
+          "[updater] No update information available (update server not configured or first release)"
+        );
+      } else {
+        // For other errors, log them but don't alarm the user
+        logger.log(`[updater] Update check failed: ${errorMessage}`);
+      }
       // Don't show error dialog for network errors (user might be offline)
       // Only log to console
     });
 
-    electronAutoUpdater.on('download-progress', (progressObj) => {
+    electronAutoUpdater.on("download-progress", (progressObj) => {
       const message = `Downloaded ${progressObj.percent}% (${progressObj.transferred}/${progressObj.total})`;
       logger.log(`[updater] ${message}`);
     });
 
-    electronAutoUpdater.on('update-downloaded', (info) => {
+    electronAutoUpdater.on("update-downloaded", (info) => {
       logger.log(`[updater] Update downloaded: ${info.version}`);
       this.showUpdateDownloadedDialog(info);
     });
@@ -70,16 +90,19 @@ export class AutoUpdater {
   /**
    * Show dialog when update is available
    */
-  private showUpdateAvailableDialog(info: { version: string; releaseDate: string }): void {
+  private showUpdateAvailableDialog(info: {
+    version: string;
+    releaseDate: string;
+  }): void {
     if (!app.isReady()) return;
 
     dialog
       .showMessageBox({
-        type: 'info',
-        title: 'Update Available',
+        type: "info",
+        title: "Update Available",
         message: `A new version (${info.version}) is available.`,
-        detail: 'Would you like to download it now?',
-        buttons: ['Download Now', 'Later'],
+        detail: "Would you like to download it now?",
+        buttons: ["Download Now", "Later"],
         defaultId: 0,
         cancelId: 1,
       })
@@ -89,7 +112,10 @@ export class AutoUpdater {
         }
       })
       .catch((err) => {
-        logger.error('[updater] Error showing update dialog:', (err as Error).message);
+        logger.error(
+          "[updater] Error showing update dialog:",
+          (err as Error).message
+        );
       });
   }
 
@@ -101,11 +127,11 @@ export class AutoUpdater {
 
     dialog
       .showMessageBox({
-        type: 'info',
-        title: 'Update Ready',
+        type: "info",
+        title: "Update Ready",
         message: `Update ${info.version} has been downloaded.`,
-        detail: 'The update will be installed when you quit the application.',
-        buttons: ['Restart Now', 'Later'],
+        detail: "The update will be installed when you quit the application.",
+        buttons: ["Restart Now", "Later"],
         defaultId: 0,
         cancelId: 1,
       })
@@ -115,7 +141,10 @@ export class AutoUpdater {
         }
       })
       .catch((err) => {
-        logger.error('[updater] Error showing downloaded dialog:', (err as Error).message);
+        logger.error(
+          "[updater] Error showing downloaded dialog:",
+          (err as Error).message
+        );
       });
   }
 
@@ -125,7 +154,7 @@ export class AutoUpdater {
   public start(): void {
     // Only check for updates in production (packaged app)
     if (!app.isPackaged) {
-      logger.log('[updater] Skipping update check in development mode');
+      logger.log("[updater] Skipping update check in development mode");
       return;
     }
 
@@ -139,7 +168,7 @@ export class AutoUpdater {
       this.checkForUpdates();
     }, this.checkIntervalMs);
 
-    logger.log('[updater] Auto-update checker started');
+    logger.log("[updater] Auto-update checker started");
   }
 
   /**
@@ -150,7 +179,7 @@ export class AutoUpdater {
       clearInterval(this.updateCheckInterval);
       this.updateCheckInterval = null;
     }
-    logger.log('[updater] Auto-update checker stopped');
+    logger.log("[updater] Auto-update checker stopped");
   }
 
   /**
@@ -158,24 +187,38 @@ export class AutoUpdater {
    */
   public async checkForUpdates(): Promise<void> {
     if (!app.isPackaged) {
-      logger.log('[updater] Skipping update check in development mode');
+      logger.log("[updater] Skipping update check in development mode");
       if (app.isReady()) {
-        dialog.showMessageBox({
-          type: 'info',
-          title: 'Development Mode',
-          message: 'Update checking is disabled in development mode.',
-        }).catch(() => {});
+        dialog
+          .showMessageBox({
+            type: "info",
+            title: "Development Mode",
+            message: "Update checking is disabled in development mode.",
+          })
+          .catch(() => {});
       }
       return;
     }
 
     try {
-      logger.log('[updater] Checking for updates...');
+      logger.log("[updater] Checking for updates...");
       await electronAutoUpdater.checkForUpdates();
     } catch (err) {
-      logger.error('[updater] Error checking for updates:', (err as Error).message);
-      // Only show error dialog for manual checks (not automatic background checks)
-      // The error event handler will handle logging
+      const errorMessage = (err as Error).message || "";
+      // Check if it's a 404 error (update file not found)
+      const is404Error =
+        errorMessage.includes("404") ||
+        errorMessage.includes("Not Found") ||
+        errorMessage.includes("Cannot find channel");
+
+      if (is404Error) {
+        // 404 means no update file exists yet - this is normal
+        logger.log("[updater] No update information available");
+      } else {
+        // For other errors, log them
+        logger.log(`[updater] Update check failed: ${errorMessage}`);
+      }
+      // Don't show error dialog - errors are handled by the error event handler
     }
   }
 
@@ -184,15 +227,17 @@ export class AutoUpdater {
    */
   private async downloadUpdate(): Promise<void> {
     try {
-      logger.log('[updater] Downloading update...');
+      logger.log("[updater] Downloading update...");
       await electronAutoUpdater.downloadUpdate();
     } catch (err) {
-      logger.error('[updater] Error downloading update:', (err as Error).message);
+      logger.error(
+        "[updater] Error downloading update:",
+        (err as Error).message
+      );
       dialog.showErrorBox(
-        'Update Download Failed',
+        "Update Download Failed",
         `Failed to download update: ${(err as Error).message}`
       );
     }
   }
 }
-
