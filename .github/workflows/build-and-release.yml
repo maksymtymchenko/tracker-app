@@ -82,29 +82,57 @@ jobs:
           aws configure set aws_secret_access_key $env:CLOUDFLARE_SECRET_ACCESS_KEY
 
           # Clear old Windows files from bucket before uploading new ones
-          Write-Host "Clearing old Windows files from bucket (keeping version $env:CURRENT_VERSION)..."
+          Write-Host "Clearing old Windows files from bucket..."
 
           # Delete latest.yml files
           aws s3 rm "s3://$env:R2_BUCKET_NAME/latest.yml" --endpoint-url "$env:R2_ENDPOINT" || true
           aws s3 rm "s3://$env:R2_BUCKET_NAME/latest-win.yml" --endpoint-url "$env:R2_ENDPOINT" || true
 
-          # List all .exe files and delete old versions (not current version)
-          $allFiles = aws s3 ls "s3://$env:R2_BUCKET_NAME/" --endpoint-url "$env:R2_ENDPOINT" 2>$null
-          if ($allFiles) {
-            $exeFiles = $allFiles | Where-Object { $_ -match "\.exe$" } | ForEach-Object {
-              $parts = $_ -split '\s+'
-              $parts[-1]
+          # Delete all .exe files (we'll upload new ones right after)
+          Write-Host "Deleting all .exe files..."
+          $output = aws s3 ls "s3://$env:R2_BUCKET_NAME/" --endpoint-url "$env:R2_ENDPOINT" 2>&1
+          if ($LASTEXITCODE -eq 0 -and $output) {
+            $exeFiles = $output | Select-String "\.exe" | ForEach-Object {
+              $line = $_.Line.Trim()
+              if ($line) {
+                $parts = $line -split '\s+', 4
+                if ($parts.Length -ge 4) {
+                  $parts[3]
+                } elseif ($parts.Length -ge 1) {
+                  $parts[-1]
+                }
+              }
             }
             foreach ($file in $exeFiles) {
-              if ($file -and $file -notmatch [regex]::Escape($env:CURRENT_VERSION)) {
-                Write-Host "Deleting old version file: $file"
-                aws s3 rm "s3://$env:R2_BUCKET_NAME/$file" --endpoint-url "$env:R2_ENDPOINT" 2>$null
+              if ($file -and $file -ne "") {
+                Write-Host "Deleting: $file"
+                aws s3 rm "s3://$env:R2_BUCKET_NAME/$file" --endpoint-url "$env:R2_ENDPOINT" 2>&1 | Out-Null
               }
             }
           }
 
           # Delete all .blockmap files (they'll be regenerated)
-          aws s3 rm "s3://$env:R2_BUCKET_NAME/" --recursive --exclude "*" --include "*.blockmap" --endpoint-url "$env:R2_ENDPOINT" || true
+          Write-Host "Deleting all .blockmap files..."
+          $output = aws s3 ls "s3://$env:R2_BUCKET_NAME/" --endpoint-url "$env:R2_ENDPOINT" 2>&1
+          if ($LASTEXITCODE -eq 0 -and $output) {
+            $blockmapFiles = $output | Select-String "\.blockmap" | ForEach-Object {
+              $line = $_.Line.Trim()
+              if ($line) {
+                $parts = $line -split '\s+', 4
+                if ($parts.Length -ge 4) {
+                  $parts[3]
+                } elseif ($parts.Length -ge 1) {
+                  $parts[-1]
+                }
+              }
+            }
+            foreach ($file in $blockmapFiles) {
+              if ($file -and $file -ne "") {
+                Write-Host "Deleting: $file"
+                aws s3 rm "s3://$env:R2_BUCKET_NAME/$file" --endpoint-url "$env:R2_ENDPOINT" 2>&1 | Out-Null
+              }
+            }
+          }
 
           Write-Host "Old Windows files cleared"
 
@@ -199,25 +227,27 @@ jobs:
           aws configure set aws_secret_access_key $CLOUDFLARE_SECRET_ACCESS_KEY
 
           # Clear old macOS files from bucket before uploading new ones
-          echo "Clearing old macOS files from bucket (keeping version $CURRENT_VERSION)..."
+          echo "Clearing old macOS files from bucket..."
 
           # Delete latest-mac.yml
           aws s3 rm "s3://$R2_BUCKET_NAME/latest-mac.yml" --endpoint-url "$R2_ENDPOINT" || true
 
-          # List all .dmg files and delete old versions (not current version)
+          # Delete all .dmg files (we'll upload new ones right after)
+          echo "Deleting all .dmg files..."
           dmg_files=$(aws s3 ls "s3://$R2_BUCKET_NAME/" --endpoint-url "$R2_ENDPOINT" | grep "\.dmg$" | awk '{print $4}')
           for file in $dmg_files; do
-            if [[ ! "$file" =~ "$CURRENT_VERSION" ]]; then
-              echo "Deleting old version file: $file"
+            if [ -n "$file" ]; then
+              echo "Deleting: $file"
               aws s3 rm "s3://$R2_BUCKET_NAME/$file" --endpoint-url "$R2_ENDPOINT" || true
             fi
           done
 
-          # List all -mac.zip files and delete old versions (not current version)
+          # Delete all -mac.zip files (we'll upload new ones right after)
+          echo "Deleting all -mac.zip files..."
           zip_files=$(aws s3 ls "s3://$R2_BUCKET_NAME/" --endpoint-url "$R2_ENDPOINT" | grep "-mac.zip$" | awk '{print $4}')
           for file in $zip_files; do
-            if [[ ! "$file" =~ "$CURRENT_VERSION" ]]; then
-              echo "Deleting old version file: $file"
+            if [ -n "$file" ]; then
+              echo "Deleting: $file"
               aws s3 rm "s3://$R2_BUCKET_NAME/$file" --endpoint-url "$R2_ENDPOINT" || true
             fi
           done
