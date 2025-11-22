@@ -156,12 +156,13 @@ async function createWindow(): Promise<void> {
   }
 
   mainWindow.on("close", (e) => {
-    // On macOS, prevent window from closing (hide instead) unless we're actually quitting
-    if (process.platform === "darwin" && !isQuitting) {
+    // Prevent window from closing (hide instead) unless we're actually quitting
+    // This allows the app to run in the background on all platforms
+    if (!isQuitting) {
       e.preventDefault();
       mainWindow?.hide();
     } else {
-      // On other platforms or when actually quitting, allow window to close
+      // When actually quitting, allow window to close
       mainWindow = null;
     }
   });
@@ -606,10 +607,9 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  // On macOS, keep app alive even when all windows are closed
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  // Keep app alive even when all windows are closed
+  // The app runs in the background via system tray on all platforms
+  // Only quit when user explicitly clicks "Quit" from tray menu
 });
 
 // macOS: Recreate window when app is activated and no window exists
