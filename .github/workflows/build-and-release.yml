@@ -74,6 +74,7 @@ jobs:
           CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
         shell: pwsh
         run: |
           # Configure AWS CLI for Cloudflare R2
@@ -81,11 +82,30 @@ jobs:
           aws configure set aws_secret_access_key $env:CLOUDFLARE_SECRET_ACCESS_KEY
 
           # Clear old Windows files from bucket before uploading new ones
-          Write-Host "Clearing old Windows files from bucket..."
+          Write-Host "Clearing old Windows files from bucket (keeping version $env:CURRENT_VERSION)..."
+
+          # Delete latest.yml files
           aws s3 rm "s3://$env:R2_BUCKET_NAME/latest.yml" --endpoint-url "$env:R2_ENDPOINT" || true
           aws s3 rm "s3://$env:R2_BUCKET_NAME/latest-win.yml" --endpoint-url "$env:R2_ENDPOINT" || true
-          aws s3 rm "s3://$env:R2_BUCKET_NAME/" --recursive --exclude "*" --include "*.exe" --endpoint-url "$env:R2_ENDPOINT" || true
+
+          # List all .exe files and delete old versions (not current version)
+          $allFiles = aws s3 ls "s3://$env:R2_BUCKET_NAME/" --endpoint-url "$env:R2_ENDPOINT" 2>$null
+          if ($allFiles) {
+            $exeFiles = $allFiles | Where-Object { $_ -match "\.exe$" } | ForEach-Object {
+              $parts = $_ -split '\s+'
+              $parts[-1]
+            }
+            foreach ($file in $exeFiles) {
+              if ($file -and $file -notmatch [regex]::Escape($env:CURRENT_VERSION)) {
+                Write-Host "Deleting old version file: $file"
+                aws s3 rm "s3://$env:R2_BUCKET_NAME/$file" --endpoint-url "$env:R2_ENDPOINT" 2>$null
+              }
+            }
+          }
+
+          # Delete all .blockmap files (they'll be regenerated)
           aws s3 rm "s3://$env:R2_BUCKET_NAME/" --recursive --exclude "*" --include "*.blockmap" --endpoint-url "$env:R2_ENDPOINT" || true
+
           Write-Host "Old Windows files cleared"
 
           # Upload latest.yml to tracker-app-auto-update subdirectory
@@ -160,7 +180,7 @@ jobs:
       - name: Build macOS app
         env:
           PUBLISH: never
-        run: npm run build && electron-builder --mac --publish never
+        run: npm run build && npx electron-builder --mac --publish never
 
       - name: Install AWS CLI
         run: |
@@ -172,16 +192,36 @@ jobs:
           CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
           # Configure AWS CLI for Cloudflare R2
           aws configure set aws_access_key_id $CLOUDFLARE_ACCESS_KEY_ID
           aws configure set aws_secret_access_key $CLOUDFLARE_SECRET_ACCESS_KEY
 
           # Clear old macOS files from bucket before uploading new ones
-          echo "Clearing old macOS files from bucket..."
-          aws s3 rm "s3://$R2_BUCKET_NAME/" --recursive --exclude "*" --include "latest-mac.yml" --endpoint-url "$R2_ENDPOINT" || true
-          aws s3 rm "s3://$R2_BUCKET_NAME/" --recursive --exclude "*" --include "*.dmg" --endpoint-url "$R2_ENDPOINT" || true
-          aws s3 rm "s3://$R2_BUCKET_NAME/" --recursive --exclude "*" --include "*-mac.zip" --endpoint-url "$R2_ENDPOINT" || true
+          echo "Clearing old macOS files from bucket (keeping version $CURRENT_VERSION)..."
+
+          # Delete latest-mac.yml
+          aws s3 rm "s3://$R2_BUCKET_NAME/latest-mac.yml" --endpoint-url "$R2_ENDPOINT" || true
+
+          # List all .dmg files and delete old versions (not current version)
+          dmg_files=$(aws s3 ls "s3://$R2_BUCKET_NAME/" --endpoint-url "$R2_ENDPOINT" | grep "\.dmg$" | awk '{print $4}')
+          for file in $dmg_files; do
+            if [[ ! "$file" =~ "$CURRENT_VERSION" ]]; then
+              echo "Deleting old version file: $file"
+              aws s3 rm "s3://$R2_BUCKET_NAME/$file" --endpoint-url "$R2_ENDPOINT" || true
+            fi
+          done
+
+          # List all -mac.zip files and delete old versions (not current version)
+          zip_files=$(aws s3 ls "s3://$R2_BUCKET_NAME/" --endpoint-url "$R2_ENDPOINT" | grep "-mac.zip$" | awk '{print $4}')
+          for file in $zip_files; do
+            if [[ ! "$file" =~ "$CURRENT_VERSION" ]]; then
+              echo "Deleting old version file: $file"
+              aws s3 rm "s3://$R2_BUCKET_NAME/$file" --endpoint-url "$R2_ENDPOINT" || true
+            fi
+          done
+
           echo "Old macOS files cleared"
 
           # Upload latest-mac.yml to tracker-app-auto-update subdirectory
