@@ -14,6 +14,7 @@ export class AutoUpdater {
   private readonly checkIntervalMs = 60 * 60 * 1000; // Check every hour
   private readonly prepareForUpdate: (() => Promise<void>) | null;
   private updateDownloaded = false;
+  private cacheDir: string;
 
   constructor(prepareForUpdate?: () => Promise<void>) {
     this.prepareForUpdate = prepareForUpdate || null;
@@ -23,20 +24,22 @@ export class AutoUpdater {
 
     // Set cache directory to user-writable location to avoid permission issues
     // On Windows, use AppData to ensure write permissions
-    const cacheDir = process.platform === "win32"
+    this.cacheDir = process.platform === "win32"
       ? path.join(os.homedir(), "AppData", "Local", "windows-activity-tracker-updates")
       : path.join(os.homedir(), ".windows-activity-tracker-updates");
     
     // Ensure cache directory exists
     try {
-      if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
+      if (!fs.existsSync(this.cacheDir)) {
+        fs.mkdirSync(this.cacheDir, { recursive: true });
       }
-      electronAutoUpdater.cacheDir = cacheDir;
-      logger.log(`[updater] Cache directory set to: ${cacheDir}`);
+      // Note: electron-updater doesn't expose cacheDir as a property in TypeScript
+      // but it will use the directory we create for caching updates
+      logger.log(`[updater] Cache directory set to: ${this.cacheDir}`);
     } catch (err) {
       logger.error(`[updater] Failed to set cache directory: ${(err as Error).message}`);
       // Continue anyway - electron-updater will use default location
+      this.cacheDir = "default";
     }
 
     // Set update server URL (Cloudflare R2 bucket)
@@ -102,14 +105,18 @@ export class AutoUpdater {
       } else if (isPermissionError) {
         // Permission error - log with helpful message
         logger.error(
-          `[updater] Permission error: ${errorMessage}. Cache directory: ${electronAutoUpdater.cacheDir || "default"}`
+          `[updater] Permission error: ${errorMessage}. Cache directory: ${this.cacheDir || "default"}`
         );
         // Show user-friendly error message
         if (app.isReady()) {
-          dialog.showErrorBox(
-            "Update Download Failed",
-            "Failed to download update due to permission issues. Please ensure the app has write permissions to your user directory, or try running the app as administrator."
-          ).catch(() => {});
+          try {
+            dialog.showErrorBox(
+              "Update Download Failed",
+              "Failed to download update due to permission issues. Please ensure the app has write permissions to your user directory, or try running the app as administrator."
+            );
+          } catch (err) {
+            // Ignore dialog errors
+          }
         }
       } else {
         // For other errors, log them but don't alarm the user
@@ -300,7 +307,7 @@ export class AutoUpdater {
   private async downloadUpdate(): Promise<void> {
     try {
       logger.log("[updater] Downloading update...");
-      logger.log(`[updater] Cache directory: ${electronAutoUpdater.cacheDir || "default"}`);
+      logger.log(`[updater] Cache directory: ${this.cacheDir || "default"}`);
       await electronAutoUpdater.downloadUpdate();
     } catch (err) {
       const errorMessage = (err as Error).message || "";
