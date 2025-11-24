@@ -17,8 +17,8 @@ async function init() {
     statusBadge.textContent = text;
     // simple mapping to colorize badge
     const base = 'inline-flex items-center rounded-full px-2.5 py-1 text-xs';
-    if (/started/i.test(text) || /sent/i.test(text)) {
-      statusBadge.className = `${base} bg-emerald-600/15 text-emerald-400`;
+    if (/started/i.test(text) || /sent/i.test(text) || /active/i.test(text)) {
+      statusBadge.className = `${base} bg-green-600 text-white`;
     } else if (/stopped/i.test(text) || /error/i.test(text) || /fail/i.test(text)) {
       statusBadge.className = `${base} bg-rose-600/15 text-rose-400`;
     } else {
