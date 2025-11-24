@@ -163,7 +163,9 @@ async function createWindow(): Promise<void> {
       e.preventDefault();
       mainWindow?.hide();
     } else {
-      // When actually quitting (including during updates), allow window to close
+      // When actually quitting (including during updates), allow window to close immediately
+      // Log the shutdown for diagnostics
+      logger.log('[shutdown] Window close event - allowing shutdown');
       // Don't set mainWindow to null here - let the cleanup function handle it
     }
   });
@@ -587,9 +589,11 @@ let isQuitting = false;
 
 /**
  * Prepare app for update installation by cleaning up all resources
+ * This function is called before update installation to ensure clean shutdown
  */
 async function prepareForUpdate(): Promise<void> {
-  logger.log('[updater] Preparing for update installation - cleaning up resources');
+  const startTime = Date.now();
+  logger.log(`[updater] [${new Date().toISOString()}] Preparing for update installation - cleaning up resources`);
   isQuitting = true;
   
   // Stop all tracking first (this clears timers in activity tracker and clipboard monitor)
@@ -680,7 +684,52 @@ async function prepareForUpdate(): Promise<void> {
   logger.log(`[updater] Waiting ${delayMs}ms for file handles to be released...`);
   await new Promise((resolve) => setTimeout(resolve, delayMs));
   
-  logger.log('[updater] Cleanup complete, ready for update installation');
+  const endTime = Date.now();
+  const duration = endTime - startTime;
+  logger.log(`[updater] [${new Date().toISOString()}] Cleanup complete in ${duration}ms, ready for update installation`);
+  logger.log(`[updater] Shutdown method: graceful`);
+  logger.log(`[updater] Shutdown result: success`);
+}
+
+// Handle process signals for faster shutdown response
+if (process.platform === 'win32') {
+  // On Windows, handle console close events
+  process.on('SIGINT', () => {
+    logger.log('[shutdown] Received SIGINT, shutting down...');
+    if (!isQuitting) {
+      isQuitting = true;
+      stopTracking();
+      app.quit();
+    }
+  });
+  
+  process.on('SIGTERM', () => {
+    logger.log('[shutdown] Received SIGTERM, shutting down...');
+    if (!isQuitting) {
+      isQuitting = true;
+      stopTracking();
+      app.quit();
+    }
+  });
+} else {
+  // On macOS/Linux, handle standard signals
+  process.on('SIGINT', () => {
+    logger.log('[shutdown] Received SIGINT, shutting down...');
+    if (!isQuitting) {
+      isQuitting = true;
+      stopTracking();
+      app.quit();
+    }
+  });
+  
+  process.on('SIGTERM', () => {
+    logger.log('[shutdown] Received SIGTERM, shutting down...');
+    if (!isQuitting) {
+      isQuitting = true;
+      stopTracking();
+      app.quit();
+    }
+  });
 }
 
 app.whenReady().then(() => {
