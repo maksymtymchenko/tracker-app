@@ -16,7 +16,8 @@ async function init() {
     statusEl.textContent = text;
     statusBadge.textContent = text;
     // simple mapping to colorize badge
-    const base = 'inline-flex items-center rounded-full px-2.5 py-1 text-xs';
+    // Increased size and padding to handle longer text like "Tracking active (1 pending)"
+    const base = 'inline-flex items-center rounded-full px-3 py-1.5 text-sm whitespace-nowrap';
     if (/started/i.test(text) || /sent/i.test(text) || /active/i.test(text)) {
       statusBadge.className = `${base} bg-green-600 text-white`;
     } else if (/stopped/i.test(text) || /error/i.test(text) || /fail/i.test(text)) {
