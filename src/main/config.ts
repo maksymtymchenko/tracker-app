@@ -11,6 +11,30 @@ const DEV_URL = "http://localhost:4000";
 const PROD_URL = "https://tracker-dashboard-zw8l.onrender.com";
 
 /**
+ * Ensure the config directory exists with proper error handling
+ * This should be called early in the app lifecycle to ensure the directory
+ * is created for new users before any other operations try to use it
+ */
+export function ensureConfigDir(): void {
+  try {
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+      console.log(`[config] Created config directory: ${CONFIG_DIR}`);
+    }
+  } catch (err) {
+    const error = err as Error;
+    console.error(
+      `[config] Failed to create config directory at ${CONFIG_DIR}:`,
+      error.message
+    );
+    // Re-throw to make the error visible - this is critical for app functionality
+    throw new Error(
+      `Failed to create config directory: ${error.message}. Please check permissions.`
+    );
+  }
+}
+
+/**
  * Get default server URL based on environment
  */
 function getDefaultServerUrl(): string {
@@ -74,9 +98,8 @@ function getDefaultConfig(): AppConfig {
 }
 
 export function ensureConfigFile(): AppConfig {
-  if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  }
+  // Ensure directory exists first (with error handling)
+  ensureConfigDir();
 
   const defaultConfig = getDefaultConfig();
 

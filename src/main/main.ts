@@ -2,7 +2,7 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 import { app, BrowserWindow, ipcMain } from "electron";
-import { ensureConfigFile, updateConfig } from "./config";
+import { ensureConfigFile, updateConfig, ensureConfigDir } from "./config";
 import { registerIpcHandlers, removeAllIpcHandlers } from "./ipc";
 import { TrayController } from "./tray";
 import { EventBuffer } from "./buffer";
@@ -654,12 +654,35 @@ async function prepareForUpdate(): Promise<void> {
 }
 
 app.whenReady().then(() => {
+  // Ensure config directory exists first (critical for new users)
+  try {
+    ensureConfigDir();
+  } catch (err) {
+    logger.error(
+      `Failed to create config directory: ${(err as Error).message}`
+    );
+    // Continue anyway - ensureConfigFile will try again
+  }
+
   // Configure startup on Windows/macOS based on config
   const config = ensureConfigFile();
   logger.log(`App starting - Log file: ${logger.getLogPath()}`);
   logger.log(`Platform: ${process.platform}, Packaged: ${app.isPackaged}`);
   if (process.platform === "win32" || process.platform === "darwin") {
-    configureStartup(config.startOnBoot);
+    // Enable auto-launch if config says it should be enabled
+    // This ensures new users automatically get auto-launch enabled
+    if (config.startOnBoot) {
+      const isCurrentlyEnabled = isStartupEnabled();
+      if (!isCurrentlyEnabled) {
+        logger.log('[tracker] Auto-launch not enabled for current user, enabling automatically');
+        configureStartup(true);
+      } else {
+        logger.log('[tracker] Auto-launch already enabled for current user');
+      }
+    } else {
+      // If config says disabled, respect that
+      configureStartup(false);
+    }
   }
   
   // Initialize and start auto-updater
