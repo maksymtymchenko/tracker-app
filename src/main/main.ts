@@ -158,12 +158,13 @@ async function createWindow(): Promise<void> {
   mainWindow.on("close", (e) => {
     // Prevent window from closing (hide instead) unless we're actually quitting
     // This allows the app to run in the background on all platforms
+    // During update installation, we need to allow the window to close
     if (!isQuitting) {
       e.preventDefault();
       mainWindow?.hide();
     } else {
-      // When actually quitting, allow window to close
-      mainWindow = null;
+      // When actually quitting (including during updates), allow window to close
+      // Don't set mainWindow to null here - let the cleanup function handle it
     }
   });
 
@@ -591,33 +592,69 @@ async function prepareForUpdate(): Promise<void> {
   logger.log('[updater] Preparing for update installation - cleaning up resources');
   isQuitting = true;
   
-  // Stop all tracking first
+  // Stop all tracking first (this clears timers in activity tracker and clipboard monitor)
   stopTracking();
   
-  // Remove all IPC handlers to prevent file locks
-  try {
-    removeAllIpcHandlers();
-  } catch (err) {
-    logger.error('[updater] Error removing IPC handlers:', (err as Error).message);
-  }
-  
-  // Flush any pending events
-  try {
-    await flushNow();
-  } catch (err) {
-    logger.error('[updater] Error flushing events before update:', (err as Error).message);
-  }
-  
-  // Clear flush timer
+  // Clear flush timer immediately
   if (flushTimer) {
     clearInterval(flushTimer);
     flushTimer = null;
   }
   
+  // Clear any pending screenshot operations by nullifying screenshotter
+  // This prevents any new screenshot operations from starting
+  if (screenshotter) {
+    screenshotter = null;
+  }
+  
+  // Clear buffer to release any memory
+  if (buffer) {
+    try {
+      // Drain any remaining events (but don't send them - we're shutting down)
+      buffer.drain();
+    } catch (err) {
+      logger.error('[updater] Error draining buffer:', (err as Error).message);
+    }
+  }
+  
+  // Remove all IPC handlers to prevent file locks
+  try {
+    removeAllIpcHandlers();
+    // Also remove any remaining IPC listeners
+    ipcMain.removeAllListeners();
+  } catch (err) {
+    logger.error('[updater] Error removing IPC handlers:', (err as Error).message);
+  }
+  
+  // Flush any pending events (with timeout to prevent hanging)
+  try {
+    await Promise.race([
+      flushNow(),
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          logger.warn('[updater] Flush timeout - continuing with shutdown');
+          resolve();
+        }, 3000);
+      })
+    ]);
+  } catch (err) {
+    logger.error('[updater] Error flushing events before update:', (err as Error).message);
+  }
+  
+  // Destroy tray first (before closing window)
+  if (trayController) {
+    try {
+      trayController.destroy();
+      trayController = null;
+    } catch (err) {
+      logger.error('[updater] Error destroying tray:', (err as Error).message);
+    }
+  }
+  
   // Close and destroy main window
   if (mainWindow) {
     try {
-      // Remove all event listeners
+      // Remove all event listeners to prevent close handler from interfering
       mainWindow.removeAllListeners('close');
       mainWindow.removeAllListeners('closed');
       mainWindow.webContents.removeAllListeners();
@@ -636,19 +673,12 @@ async function prepareForUpdate(): Promise<void> {
     }
   }
   
-  // Destroy tray
-  if (trayController) {
-    try {
-      trayController.destroy();
-      trayController = null;
-    } catch (err) {
-      logger.error('[updater] Error destroying tray:', (err as Error).message);
-    }
-  }
-  
-  // Give Windows time to release file handles
-  // This is important for Windows file locking behavior
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // Give Windows extra time to release file handles
+  // This is critical for Windows file locking behavior
+  // Longer delay on Windows to ensure all native modules release their handles
+  const delayMs = process.platform === 'win32' ? 2000 : 1000;
+  logger.log(`[updater] Waiting ${delayMs}ms for file handles to be released...`);
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
   
   logger.log('[updater] Cleanup complete, ready for update installation');
 }
@@ -734,15 +764,20 @@ app.on("before-quit", async (e) => {
       await prepareForUpdate();
       // After cleanup, allow the quit to proceed
       // electron-updater will handle the actual quit and installation via autoInstallOnAppQuit
+      // Use a shorter delay since cleanup already included delays
       setTimeout(() => {
+        logger.log('[updater] Quitting app for update installation');
         app.quit();
-      }, 500);
+      }, 300);
     } catch (err) {
       logger.error('[updater] Error during cleanup before auto-install:', (err as Error).message);
       // Still allow quit to proceed after a delay
+      // On Windows, give extra time for file handles to release
+      const delayMs = process.platform === 'win32' ? 1500 : 500;
       setTimeout(() => {
+        logger.log('[updater] Quitting app after cleanup error');
         app.quit();
-      }, 500);
+      }, delayMs);
     }
   } else {
     // Normal quit - just flush events and close window

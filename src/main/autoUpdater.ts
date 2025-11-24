@@ -193,23 +193,35 @@ export class AutoUpdater {
             if (this.prepareForUpdate) {
               logger.log('[updater] Cleaning up resources before update installation');
               await this.prepareForUpdate();
-              // Additional delay to ensure all file handles are released on Windows
-              logger.log('[updater] Waiting for file handles to be released...');
-              await new Promise((resolve) => setTimeout(resolve, 1500));
             }
           } catch (err) {
             logger.error(
               '[updater] Error during cleanup before update:',
               (err as Error).message
             );
-            // Continue with update anyway, but add delay
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            // Continue with update anyway, but add extra delay for Windows
+            const delayMs = process.platform === 'win32' ? 2000 : 1000;
+            logger.log(`[updater] Adding ${delayMs}ms delay after cleanup error...`);
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
           }
           
           // Now quit and install
           // Use isSilent=false to show installer UI, isForceRunAfter=true to restart after install
+          // On Windows, we need to ensure the app process can be terminated
           logger.log('[updater] Quitting and installing update');
-          electronAutoUpdater.quitAndInstall(false, true);
+          try {
+            electronAutoUpdater.quitAndInstall(false, true);
+          } catch (err) {
+            logger.error(
+              '[updater] Error calling quitAndInstall:',
+              (err as Error).message
+            );
+            // Fallback: try to quit the app manually
+            logger.log('[updater] Attempting manual quit as fallback...');
+            setTimeout(() => {
+              app.quit();
+            }, 500);
+          }
         }
       })
       .catch((err) => {
