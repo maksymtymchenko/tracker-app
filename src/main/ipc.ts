@@ -29,4 +29,21 @@ export function registerIpcHandlers(): void {
   });
 }
 
+/**
+ * Remove all IPC handlers to prevent file locks during update
+ */
+export function removeAllIpcHandlers(): void {
+  try {
+    ipcMain.removeHandler('config:get');
+    ipcMain.removeHandler('config:update');
+    ipcMain.removeHandler('username:get');
+    ipcMain.removeHandler('updater:check');
+    // Remove any screenshot listeners
+    ipcMain.removeAllListeners('screenshot:result');
+    ipcMain.removeAllListeners('screenshot:request');
+  } catch (err) {
+    // Ignore errors during cleanup
+  }
+}
+
 

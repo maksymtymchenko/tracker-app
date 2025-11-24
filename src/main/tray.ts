@@ -184,4 +184,14 @@ export class TrayController {
     ]);
     this.tray.setContextMenu(contextMenu);
   }
+
+  /**
+   * Destroy the tray icon
+   */
+  destroy(): void {
+    if (this.tray) {
+      this.tray.destroy();
+      this.tray = null;
+    }
+  }
 }

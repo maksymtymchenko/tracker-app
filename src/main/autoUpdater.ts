@@ -1,5 +1,8 @@
 import { autoUpdater as electronAutoUpdater } from "electron-updater";
 import { app, dialog } from "electron";
+import path from "path";
+import os from "os";
+import fs from "fs";
 import { logger } from "./logger";
 
 /**
@@ -9,11 +12,32 @@ import { logger } from "./logger";
 export class AutoUpdater {
   private updateCheckInterval: NodeJS.Timeout | null = null;
   private readonly checkIntervalMs = 60 * 60 * 1000; // Check every hour
+  private readonly prepareForUpdate: (() => Promise<void>) | null;
+  private updateDownloaded = false;
 
-  constructor() {
+  constructor(prepareForUpdate?: () => Promise<void>) {
+    this.prepareForUpdate = prepareForUpdate || null;
     // Configure auto-updater
     electronAutoUpdater.autoDownload = false; // Don't auto-download, let user choose
     electronAutoUpdater.autoInstallOnAppQuit = true; // Install on quit after download
+
+    // Set cache directory to user-writable location to avoid permission issues
+    // On Windows, use AppData to ensure write permissions
+    const cacheDir = process.platform === "win32"
+      ? path.join(os.homedir(), "AppData", "Local", "windows-activity-tracker-updates")
+      : path.join(os.homedir(), ".windows-activity-tracker-updates");
+    
+    // Ensure cache directory exists
+    try {
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      electronAutoUpdater.cacheDir = cacheDir;
+      logger.log(`[updater] Cache directory set to: ${cacheDir}`);
+    } catch (err) {
+      logger.error(`[updater] Failed to set cache directory: ${(err as Error).message}`);
+      // Continue anyway - electron-updater will use default location
+    }
 
     // Set update server URL (Cloudflare R2 bucket)
     // For Cloudflare R2 public bucket, use: https://<bucket-name>.r2.dev
@@ -61,6 +85,13 @@ export class AutoUpdater {
         errorMessage.includes("404") ||
         errorMessage.includes("Not Found") ||
         errorMessage.includes("Cannot find channel");
+      
+      // Check if it's a permission error
+      const isPermissionError =
+        errorMessage.includes("EPERM") ||
+        errorMessage.includes("operation not permitted") ||
+        errorMessage.includes("permission denied") ||
+        errorMessage.includes("EACCES");
 
       if (is404Error) {
         // 404 means no update file exists yet - this is normal for first release
@@ -68,6 +99,18 @@ export class AutoUpdater {
         logger.log(
           "[updater] No update information available (update server not configured or first release)"
         );
+      } else if (isPermissionError) {
+        // Permission error - log with helpful message
+        logger.error(
+          `[updater] Permission error: ${errorMessage}. Cache directory: ${electronAutoUpdater.cacheDir || "default"}`
+        );
+        // Show user-friendly error message
+        if (app.isReady()) {
+          dialog.showErrorBox(
+            "Update Download Failed",
+            "Failed to download update due to permission issues. Please ensure the app has write permissions to your user directory, or try running the app as administrator."
+          ).catch(() => {});
+        }
       } else {
         // For other errors, log them but don't alarm the user
         logger.log(`[updater] Update check failed: ${errorMessage}`);
@@ -83,6 +126,7 @@ export class AutoUpdater {
 
     electronAutoUpdater.on("update-downloaded", (info) => {
       logger.log(`[updater] Update downloaded: ${info.version}`);
+      this.updateDownloaded = true;
       this.showUpdateDownloadedDialog(info);
     });
   }
@@ -135,8 +179,29 @@ export class AutoUpdater {
         defaultId: 0,
         cancelId: 1,
       })
-      .then((result) => {
+      .then(async (result) => {
         if (result.response === 0) {
+          // Prepare for update by cleaning up all resources
+          try {
+            if (this.prepareForUpdate) {
+              logger.log('[updater] Cleaning up resources before update installation');
+              await this.prepareForUpdate();
+              // Additional delay to ensure all file handles are released on Windows
+              logger.log('[updater] Waiting for file handles to be released...');
+              await new Promise((resolve) => setTimeout(resolve, 1500));
+            }
+          } catch (err) {
+            logger.error(
+              '[updater] Error during cleanup before update:',
+              (err as Error).message
+            );
+            // Continue with update anyway, but add delay
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+          
+          // Now quit and install
+          // Use isSilent=false to show installer UI, isForceRunAfter=true to restart after install
+          logger.log('[updater] Quitting and installing update');
           electronAutoUpdater.quitAndInstall(false, true);
         }
       })
@@ -180,6 +245,13 @@ export class AutoUpdater {
       this.updateCheckInterval = null;
     }
     logger.log("[updater] Auto-update checker stopped");
+  }
+
+  /**
+   * Check if an update has been downloaded and is pending installation
+   */
+  public hasPendingUpdate(): boolean {
+    return this.updateDownloaded;
   }
 
   /**
@@ -228,16 +300,36 @@ export class AutoUpdater {
   private async downloadUpdate(): Promise<void> {
     try {
       logger.log("[updater] Downloading update...");
+      logger.log(`[updater] Cache directory: ${electronAutoUpdater.cacheDir || "default"}`);
       await electronAutoUpdater.downloadUpdate();
     } catch (err) {
+      const errorMessage = (err as Error).message || "";
+      const isPermissionError =
+        errorMessage.includes("EPERM") ||
+        errorMessage.includes("operation not permitted") ||
+        errorMessage.includes("permission denied") ||
+        errorMessage.includes("EACCES");
+
       logger.error(
         "[updater] Error downloading update:",
-        (err as Error).message
+        errorMessage
       );
-      dialog.showErrorBox(
-        "Update Download Failed",
-        `Failed to download update: ${(err as Error).message}`
-      );
+
+      if (isPermissionError) {
+        dialog.showErrorBox(
+          "Update Download Failed - Permission Error",
+          "Failed to download update due to permission issues.\n\n" +
+          "Possible solutions:\n" +
+          "1. Run the app as administrator\n" +
+          "2. Check that your user account has write permissions\n" +
+          "3. Try downloading the update manually from the website"
+        );
+      } else {
+        dialog.showErrorBox(
+          "Update Download Failed",
+          `Failed to download update: ${errorMessage}`
+        );
+      }
     }
   }
 }

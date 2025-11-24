@@ -3,7 +3,7 @@ import os from "os";
 import fs from "fs";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { ensureConfigFile, updateConfig } from "./config";
-import { registerIpcHandlers } from "./ipc";
+import { registerIpcHandlers, removeAllIpcHandlers } from "./ipc";
 import { TrayController } from "./tray";
 import { EventBuffer } from "./buffer";
 import { ActivityTracker } from "./activityTracker";
@@ -584,6 +584,75 @@ function stopTracking(): void {
 // Track if app is quitting to prevent window recreation
 let isQuitting = false;
 
+/**
+ * Prepare app for update installation by cleaning up all resources
+ */
+async function prepareForUpdate(): Promise<void> {
+  logger.log('[updater] Preparing for update installation - cleaning up resources');
+  isQuitting = true;
+  
+  // Stop all tracking first
+  stopTracking();
+  
+  // Remove all IPC handlers to prevent file locks
+  try {
+    removeAllIpcHandlers();
+  } catch (err) {
+    logger.error('[updater] Error removing IPC handlers:', (err as Error).message);
+  }
+  
+  // Flush any pending events
+  try {
+    await flushNow();
+  } catch (err) {
+    logger.error('[updater] Error flushing events before update:', (err as Error).message);
+  }
+  
+  // Clear flush timer
+  if (flushTimer) {
+    clearInterval(flushTimer);
+    flushTimer = null;
+  }
+  
+  // Close and destroy main window
+  if (mainWindow) {
+    try {
+      // Remove all event listeners
+      mainWindow.removeAllListeners('close');
+      mainWindow.removeAllListeners('closed');
+      mainWindow.webContents.removeAllListeners();
+      
+      // Close web contents first
+      if (!mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.close();
+      }
+      
+      // Then close and destroy window
+      mainWindow.close();
+      mainWindow.destroy();
+      mainWindow = null;
+    } catch (err) {
+      logger.error('[updater] Error closing window:', (err as Error).message);
+    }
+  }
+  
+  // Destroy tray
+  if (trayController) {
+    try {
+      trayController.destroy();
+      trayController = null;
+    } catch (err) {
+      logger.error('[updater] Error destroying tray:', (err as Error).message);
+    }
+  }
+  
+  // Give Windows time to release file handles
+  // This is important for Windows file locking behavior
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  
+  logger.log('[updater] Cleanup complete, ready for update installation');
+}
+
 app.whenReady().then(() => {
   // Configure startup on Windows/macOS based on config
   const config = ensureConfigFile();
@@ -595,7 +664,7 @@ app.whenReady().then(() => {
   
   // Initialize and start auto-updater
   try {
-    autoUpdater = new AutoUpdater();
+    autoUpdater = new AutoUpdater(prepareForUpdate);
     setAutoUpdaterInstance(autoUpdater);
     autoUpdater.start();
     logger.log('[updater] Auto-updater initialized');
@@ -628,11 +697,37 @@ app.on("activate", () => {
 
 app.on("before-quit", async (e) => {
   isQuitting = true;
-  // Prevent default quit behavior to allow cleanup
-  await flushNow().catch(() => {});
-  // Destroy window properly
-  if (mainWindow) {
-    mainWindow.removeAllListeners("close");
-    mainWindow.close();
+  
+  // Check if there's a pending update (autoInstallOnAppQuit will handle it)
+  // In that case, we need to ensure all resources are cleaned up
+  const hasPendingUpdate = autoUpdater?.hasPendingUpdate() || false;
+  
+  if (hasPendingUpdate) {
+    logger.log('[updater] Update pending, preparing for installation');
+    // Prevent default quit to allow cleanup first
+    e.preventDefault();
+    // Use the same cleanup as manual update installation
+    try {
+      await prepareForUpdate();
+      // After cleanup, allow the quit to proceed
+      // electron-updater will handle the actual quit and installation via autoInstallOnAppQuit
+      setTimeout(() => {
+        app.quit();
+      }, 500);
+    } catch (err) {
+      logger.error('[updater] Error during cleanup before auto-install:', (err as Error).message);
+      // Still allow quit to proceed after a delay
+      setTimeout(() => {
+        app.quit();
+      }, 500);
+    }
+  } else {
+    // Normal quit - just flush events and close window
+    await flushNow().catch(() => {});
+    // Destroy window properly
+    if (mainWindow) {
+      mainWindow.removeAllListeners("close");
+      mainWindow.close();
+    }
   }
 });
