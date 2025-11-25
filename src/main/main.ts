@@ -797,6 +797,9 @@ app.on("activate", () => {
   }
 });
 
+// Track if we're already handling an update to prevent infinite loops
+let handlingUpdate = false;
+
 app.on("before-quit", async (e) => {
   isQuitting = true;
   
@@ -804,31 +807,42 @@ app.on("before-quit", async (e) => {
   // In that case, we need to ensure all resources are cleaned up
   const hasPendingUpdate = autoUpdater?.hasPendingUpdate() || false;
   
-  if (hasPendingUpdate) {
+  if (hasPendingUpdate && !handlingUpdate) {
     logger.log('[updater] Update pending, preparing for installation');
+    handlingUpdate = true; // Prevent infinite loop
+    
+    // Clear the pending update flag to prevent future loops
+    if (autoUpdater) {
+      autoUpdater.clearPendingUpdate();
+    }
+    
     // Prevent default quit to allow cleanup first
     e.preventDefault();
+    
     // Use the same cleanup as manual update installation
     try {
       await prepareForUpdate();
-      // After cleanup, allow the quit to proceed
-      // electron-updater will handle the actual quit and installation via autoInstallOnAppQuit
-      // Use a shorter delay since cleanup already included delays
-      setTimeout(() => {
-        logger.log('[updater] Quitting app for update installation');
-        app.quit();
-      }, 300);
+      // After cleanup, force quit without going through before-quit again
+      logger.log('[updater] Quitting app for update installation');
+      // Use app.exit() to bypass before-quit handler
+      process.nextTick(() => {
+        app.exit(0);
+      });
     } catch (err) {
       logger.error('[updater] Error during cleanup before auto-install:', (err as Error).message);
-      // Still allow quit to proceed after a delay
-      // On Windows, give extra time for file handles to release
-      const delayMs = process.platform === 'win32' ? 1500 : 500;
+      // Still force quit after a delay
       setTimeout(() => {
-        logger.log('[updater] Quitting app after cleanup error');
-        app.quit();
-      }, delayMs);
+        logger.log('[updater] Force quitting app after cleanup error');
+        app.exit(0);
+      }, 1000);
     }
-  } else {
+    
+    // Safety timeout - if we're still here after 10 seconds, force quit
+    setTimeout(() => {
+      logger.error('[updater] Update installation timeout - force quitting');
+      app.exit(1);
+    }, 10000);
+  } else if (!hasPendingUpdate) {
     // Normal quit - just flush events and close window
     await flushNow().catch(() => {});
     // Destroy window properly
@@ -837,4 +851,5 @@ app.on("before-quit", async (e) => {
       mainWindow.close();
     }
   }
+  // If handlingUpdate is true, let the quit proceed normally (don't prevent)
 });

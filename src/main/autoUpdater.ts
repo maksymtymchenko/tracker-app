@@ -188,6 +188,9 @@ export class AutoUpdater {
       })
       .then(async (result) => {
         if (result.response === 0) {
+          // Clear the pending update flag to prevent loops
+          this.updateDownloaded = false;
+          
           // Prepare for update by cleaning up all resources
           try {
             if (this.prepareForUpdate) {
@@ -216,10 +219,10 @@ export class AutoUpdater {
               '[updater] Error calling quitAndInstall:',
               (err as Error).message
             );
-            // Fallback: try to quit the app manually
-            logger.log('[updater] Attempting manual quit as fallback...');
+            // Fallback: force quit the app to avoid before-quit loop
+            logger.log('[updater] Attempting force quit as fallback...');
             setTimeout(() => {
-              app.quit();
+              app.exit(0);
             }, 500);
           }
         }
@@ -271,6 +274,13 @@ export class AutoUpdater {
    */
   public hasPendingUpdate(): boolean {
     return this.updateDownloaded;
+  }
+
+  /**
+   * Clear the pending update flag (used when starting update installation)
+   */
+  public clearPendingUpdate(): void {
+    this.updateDownloaded = false;
   }
 
   /**
