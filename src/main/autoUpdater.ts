@@ -56,6 +56,9 @@ export class AutoUpdater {
       url: updateServerUrl,
     });
 
+    logger.log(`[updater] Update server URL: ${updateServerUrl}`);
+    logger.log(`[updater] App version at startup: ${app.getVersion()}`);
+
     // Setup event handlers
     this.setupEventHandlers();
   }
@@ -65,17 +68,25 @@ export class AutoUpdater {
    */
   private setupEventHandlers(): void {
     electronAutoUpdater.on("checking-for-update", () => {
-      logger.log("[updater] Checking for updates...");
+      logger.log(`[updater] Checking for updates... Current version: ${app.getVersion()}`);
     });
 
     electronAutoUpdater.on("update-available", (info) => {
-      logger.log(`[updater] Update available: ${info.version}`);
+      const currentVersion = app.getVersion();
+      logger.log(`[updater] Update available: ${info.version} (current: ${currentVersion})`);
+      
+      // Safety check: don't update to the same version
+      if (info.version === currentVersion) {
+        logger.log(`[updater] Already on version ${info.version}, skipping update`);
+        return;
+      }
+      
       this.showUpdateAvailableDialog(info);
     });
 
     electronAutoUpdater.on("update-not-available", (info) => {
       logger.log(
-        `[updater] Update not available. Current version: ${info.version}`
+        `[updater] Update not available. App version: ${app.getVersion()}, Latest available: ${info.version}`
       );
       // Optionally show a message for manual checks
       // For automatic checks, we stay silent
@@ -245,6 +256,10 @@ export class AutoUpdater {
       return;
     }
 
+    // Clear update cache on startup to prevent stale version detection
+    // This helps resolve issues where the app doesn't recognize it's been updated
+    this.clearUpdateCache();
+
     // Check immediately on start (after a short delay to let app initialize)
     setTimeout(() => {
       this.checkForUpdates();
@@ -281,6 +296,32 @@ export class AutoUpdater {
    */
   public clearPendingUpdate(): void {
     this.updateDownloaded = false;
+  }
+
+  /**
+   * Clear update cache to force fresh version check
+   * This helps resolve issues where electron-updater caches stale version info
+   */
+  public clearUpdateCache(): void {
+    try {
+      if (this.cacheDir && this.cacheDir !== "default" && fs.existsSync(this.cacheDir)) {
+        const files = fs.readdirSync(this.cacheDir);
+        for (const file of files) {
+          const filePath = path.join(this.cacheDir, file);
+          try {
+            if (fs.statSync(filePath).isFile()) {
+              fs.unlinkSync(filePath);
+              logger.log(`[updater] Cleared cache file: ${file}`);
+            }
+          } catch (err) {
+            logger.warn(`[updater] Could not clear cache file ${file}: ${(err as Error).message}`);
+          }
+        }
+        logger.log('[updater] Update cache cleared');
+      }
+    } catch (err) {
+      logger.warn(`[updater] Could not clear update cache: ${(err as Error).message}`);
+    }
   }
 
   /**

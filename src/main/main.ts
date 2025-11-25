@@ -747,6 +747,7 @@ app.whenReady().then(() => {
   const config = ensureConfigFile();
   logger.log(`App starting - Log file: ${logger.getLogPath()}`);
   logger.log(`Platform: ${process.platform}, Packaged: ${app.isPackaged}`);
+  logger.log(`Current app version: ${app.getVersion()}`);
   if (process.platform === "win32" || process.platform === "darwin") {
     // Enable auto-launch if config says it should be enabled
     // This ensures new users automatically get auto-launch enabled
