@@ -1,52 +1,50 @@
 <!doctype html>
 <html>
-  <head>
+
+<head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com;"
-    />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com;" />
     <title>Activity Tracker</title>
     <script src="https://cdn.tailwindcss.com"></script>
-  </head>
-  <body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center p-4">
+</head>
+
+<body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center p-4">
     <div class="w-full max-w-md">
-      <div class="rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 shadow-xl overflow-hidden">
-        <div class="px-6 py-5 border-b border-slate-800 flex items-center gap-3">
-          <div class="h-10 w-10 rounded-lg bg-emerald-600/15 text-emerald-400 flex items-center justify-center text-xl">⌛</div>
-          <div>
-            <h1 class="text-lg font-semibold tracking-tight">Windows Activity Tracker</h1>
-            <p class="text-xs text-slate-400">Lightweight background tracker</p>
-          </div>
-          <div class="ml-auto flex-shrink-0">
-            <span id="statusBadge" class="inline-flex items-center rounded-full bg-slate-800 text-slate-300 px-3 py-1.5 text-sm whitespace-nowrap">Ready</span>
-          </div>
-        </div>
-
-        <div class="px-6 py-6">
-          <div class="text-slate-400 text-xs">User</div>
-          <div id="user" class="mt-1 text-xl font-medium tracking-tight"></div>
-
-          <div class="mt-6 grid grid-cols-2 gap-3">
-            <div class="rounded-xl bg-slate-900/60 border border-slate-800 p-4">
-              <div class="text-xs text-slate-400">Status</div>
-              <div id="status" class="mt-1 text-sm text-slate-200">Ready</div>
+        <div class="rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 shadow-xl overflow-hidden">
+            <div class="px-6 py-5 border-b border-slate-800 flex items-center gap-3">
+                <div class="h-10 w-10 rounded-lg bg-emerald-600/15 text-emerald-400 flex items-center justify-center text-xl">⌛</div>
+                <div>
+                    <h1 class="text-lg font-semibold tracking-tight">Activity Tracker</h1>
+                    <p class="text-xs text-slate-400">Lightweight background tracker</p>
+                </div>
+                <div class="ml-auto flex-shrink-0">
+                    <span id="statusBadge" class="inline-flex items-center rounded-full bg-slate-800 text-slate-300 px-3 py-1.5 text-sm whitespace-nowrap">Ready</span>
+                </div>
             </div>
-            <div class="rounded-xl bg-slate-900/60 border border-slate-800 p-4">
-              <div class="text-xs text-slate-400">Mode</div>
-              <div class="mt-1 text-sm text-slate-200">Background</div>
-            </div>
-          </div>
-        </div>
 
-        <div class="px-6 py-4 border-t border-slate-800 text-[11px] text-slate-500">
-          Manage via tray: Show/Hide, Start/Stop, Quit
+            <div class="px-6 py-6">
+                <div class="text-slate-400 text-xs">User</div>
+                <div id="user" class="mt-1 text-xl font-medium tracking-tight"></div>
+
+                <div class="mt-6 grid grid-cols-2 gap-3">
+                    <div class="rounded-xl bg-slate-900/60 border border-slate-800 p-4">
+                        <div class="text-xs text-slate-400">Status</div>
+                        <div id="status" class="mt-1 text-sm text-slate-200">Ready</div>
+                    </div>
+                    <div class="rounded-xl bg-slate-900/60 border border-slate-800 p-4">
+                        <div class="text-xs text-slate-400">Mode</div>
+                        <div class="mt-1 text-sm text-slate-200">Background</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-slate-800 text-[11px] text-slate-500">
+                Manage via tray: Show/Hide, Start/Stop, Quit
+            </div>
         </div>
-      </div>
     </div>
     <script src="./index.js"></script>
-  </body>
-  </html>
+</body>
 
-
+</html>
