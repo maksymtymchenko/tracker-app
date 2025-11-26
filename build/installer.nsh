@@ -10,18 +10,40 @@
   Var /GLOBAL ProcessFound
   Var /GLOBAL ShutdownAttempt
   Var /GLOBAL MaxShutdownAttempts
+  Var /GLOBAL TotalWaitTime
   
   ; Initialize variables
   StrCpy $ShutdownAttempt 0
   StrCpy $MaxShutdownAttempts 3
+  StrCpy $TotalWaitTime 0
   
-  ; Function to check if application is running using FindWindow
+  ; Function to check if application is running using multiple methods
   Function CheckAppRunning
     StrCpy $ProcessFound 0
+    
+    ; Method 1: Check for window
     FindWindow $R0 "" "Windows Activity Tracker"
     ${If} $R0 != 0
       StrCpy $ProcessFound 1
+      Goto check_done
     ${EndIf}
+    
+    ; Method 2: Check for process using tasklist
+    ; This is more reliable for background processes
+    ExecWait 'tasklist /FI "IMAGENAME eq Windows Activity Tracker.exe" /FO CSV | findstr /C:"Windows Activity Tracker.exe"' $R1
+    ${If} $R1 == 0
+      StrCpy $ProcessFound 1
+      Goto check_done
+    ${EndIf}
+    
+    ; Method 3: Alternative process name check (in case of spaces in filename)
+    ExecWait 'tasklist /FI "IMAGENAME eq WindowsActivityTracker.exe" /FO CSV | findstr /C:"WindowsActivityTracker.exe"' $R2
+    ${If} $R2 == 0
+      StrCpy $ProcessFound 1
+      Goto check_done
+    ${EndIf}
+    
+    check_done:
   FunctionEnd
   
   ; Function to send graceful shutdown signal
@@ -48,17 +70,26 @@
   
   ; Function to force close application
   Function ForceCloseApp
-    ; Use taskkill to force close
+    ; Try multiple process names and force close methods
+    
+    ; Method 1: Standard executable name
     ExecWait 'taskkill /F /IM "Windows Activity Tracker.exe" /T' $0
     
-    ${If} $0 == 0
-      Sleep 1000  ; Wait for process to terminate
-      Call CheckAppRunning
-      ${If} $ProcessFound == 0
-        StrCpy $0 1  ; Success
-      ${Else}
-        StrCpy $0 0  ; Failed
-      ${EndIf}
+    ; Method 2: Alternative name (without spaces)
+    ${If} $0 != 0
+      ExecWait 'taskkill /F /IM "WindowsActivityTracker.exe" /T' $0
+    ${EndIf}
+    
+    ; Method 3: Kill by window title (if process name doesn't work)
+    ${If} $0 != 0
+      ExecWait 'taskkill /F /FI "WINDOWTITLE eq Windows Activity Tracker*" /T' $0
+    ${EndIf}
+    
+    ; Wait for process to terminate and verify
+    Sleep 2000  ; Give more time for process cleanup
+    Call CheckAppRunning
+    ${If} $ProcessFound == 0
+      StrCpy $0 1  ; Success
     ${Else}
       StrCpy $0 0  ; Failed
     ${EndIf}
@@ -87,24 +118,46 @@
       ${EndIf}
       ; Wait a bit before retrying
       Sleep 1000
+      IntOp $TotalWaitTime $TotalWaitTime + 1000
       Goto shutdown_loop
     ${EndIf}
   
-  ; All attempts failed - show manual close dialog
+  ; All attempts failed - but if we've waited long enough, assume the app is closed
+  ; This handles cases where process detection fails but the app is actually closed
+  ${If} $TotalWaitTime >= 10000  ; If we've waited 10+ seconds
+    ; Do one final comprehensive check
+    Sleep 2000
+    Call CheckAppRunning
+    ${If} $ProcessFound == 0
+      Goto shutdown_success
+    ${EndIf}
+  ${EndIf}
+  
+  ; All attempts failed - show manual close dialog with better instructions
   manual_close_dialog:
     MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
       "Unable to close the application, please close it manually.$\n$\n" \
-      "Please close 'Windows Activity Tracker' and click Retry.$\n$\n" \
-      "Process: Windows Activity Tracker.exe" \
+      "Steps to close the application:$\n" \
+      "1. Check the system tray (bottom-right corner) for the app icon$\n" \
+      "2. Right-click the icon and select 'Quit' or 'Exit'$\n" \
+      "3. If no tray icon, open Task Manager (Ctrl+Shift+Esc)$\n" \
+      "4. Find 'Windows Activity Tracker' and click 'End Task'$\n$\n" \
+      "Click Retry after closing the application." \
       IDRETRY retry_shutdown \
       IDCANCEL cancel_install
   
   retry_shutdown:
+    ; Give the user a moment to close the app
+    Sleep 1000
     Call CheckAppRunning
     ${If} $ProcessFound == 0
       Goto shutdown_success
     ${Else}
-      Goto manual_close_dialog
+      ; Show a simpler retry dialog
+      MessageBox MB_RETRYCANCEL|MB_ICONQUESTION \
+        "The application is still running. Please make sure it's completely closed and try again." \
+        IDRETRY retry_shutdown \
+        IDCANCEL cancel_install
     ${EndIf}
   
   cancel_install:

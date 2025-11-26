@@ -170,6 +170,14 @@ async function createWindow(): Promise<void> {
     }
   });
 
+  // Handle system shutdown messages (important for installer compatibility)
+  mainWindow.on('session-end', () => {
+    logger.log('[shutdown] System session ending, shutting down...');
+    isQuitting = true;
+    stopTracking();
+    app.exit(0);
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -692,44 +700,37 @@ async function prepareForUpdate(): Promise<void> {
 }
 
 // Handle process signals for faster shutdown response
+// This is especially important for installer-initiated shutdowns
+const handleShutdownSignal = (signal: string) => {
+  logger.log(`[shutdown] Received ${signal}, shutting down immediately...`);
+  if (!isQuitting) {
+    isQuitting = true;
+    stopTracking();
+    
+    // For installer-initiated shutdowns, exit immediately without cleanup delays
+    // The installer needs the process to terminate quickly
+    if (signal === 'SIGTERM' || signal === 'SIGINT') {
+      logger.log('[shutdown] Fast shutdown for installer');
+      process.nextTick(() => {
+        app.exit(0);
+      });
+    } else {
+      app.quit();
+    }
+  }
+};
+
 if (process.platform === 'win32') {
-  // On Windows, handle console close events
-  process.on('SIGINT', () => {
-    logger.log('[shutdown] Received SIGINT, shutting down...');
-    if (!isQuitting) {
-      isQuitting = true;
-      stopTracking();
-      app.quit();
-    }
-  });
+  // On Windows, handle console close events and installer signals
+  process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
+  process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
   
-  process.on('SIGTERM', () => {
-    logger.log('[shutdown] Received SIGTERM, shutting down...');
-    if (!isQuitting) {
-      isQuitting = true;
-      stopTracking();
-      app.quit();
-    }
-  });
+  // Handle Windows-specific shutdown events
+  process.on('SIGBREAK', () => handleShutdownSignal('SIGBREAK'));
 } else {
   // On macOS/Linux, handle standard signals
-  process.on('SIGINT', () => {
-    logger.log('[shutdown] Received SIGINT, shutting down...');
-    if (!isQuitting) {
-      isQuitting = true;
-      stopTracking();
-      app.quit();
-    }
-  });
-  
-  process.on('SIGTERM', () => {
-    logger.log('[shutdown] Received SIGTERM, shutting down...');
-    if (!isQuitting) {
-      isQuitting = true;
-      stopTracking();
-      app.quit();
-    }
-  });
+  process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
+  process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
 }
 
 app.whenReady().then(() => {
