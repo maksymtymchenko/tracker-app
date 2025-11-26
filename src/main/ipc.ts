@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { ipcMain, app } from 'electron';
 import os from 'os';
 import { updateConfig, ensureConfigFile } from './config';
 
@@ -20,6 +20,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('config:get', () => ensureConfigFile());
   ipcMain.handle('config:update', (_e, partial) => updateConfig(partial));
   ipcMain.handle('username:get', () => getCurrentUsername());
+  ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('updater:check', async () => {
     if (autoUpdaterInstance) {
       await autoUpdaterInstance.checkForUpdates();
@@ -37,6 +38,7 @@ export function removeAllIpcHandlers(): void {
     ipcMain.removeHandler('config:get');
     ipcMain.removeHandler('config:update');
     ipcMain.removeHandler('username:get');
+    ipcMain.removeHandler('app:version');
     ipcMain.removeHandler('updater:check');
     // Remove any screenshot listeners
     ipcMain.removeAllListeners('screenshot:result');

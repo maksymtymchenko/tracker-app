@@ -1,6 +1,7 @@
 async function init() {
   const statusEl = document.getElementById('status')!;
   const userEl = document.getElementById('user')!;
+  const versionEl = document.getElementById('version')!;
   const statusBadge = document.getElementById('statusBadge') as HTMLSpanElement;
 
   try {
@@ -10,6 +11,14 @@ async function init() {
   } catch (e) {
     statusEl.textContent = 'Failed to load username';
     console.error('Failed to load username:', e);
+  }
+
+  try {
+    const version = await window.tracker.getVersion();
+    versionEl.textContent = `v${version}`;
+  } catch (e) {
+    versionEl.textContent = 'v?.?.?';
+    console.error('Failed to load version:', e);
   }
 
   const updateBadge = (text: string) => {
