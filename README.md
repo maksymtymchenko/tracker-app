@@ -6,7 +6,7 @@ A lightweight, cross-platform desktop activity tracker built with Electron and T
 
 - ✅ **Activity Tracking**: Monitors active window changes, focused duration, and idle states
 - ✅ **Clipboard Monitoring**: Detects clipboard changes with content type inference
-- ✅ **Screenshot Capture**: Optional rate-limited screenshots on window change or click
+- ✅ **Screenshot Capture**: Optional rate-limited screenshots on window change or every 10 clicks
 - ✅ **Multi-User Support**: Automatically detects logged-in user for shared remote desktops
 - ✅ **Event Batching**: Buffers events and sends in batches to reduce network overhead
 - ✅ **System Tray Integration**: Runs in background with tray menu for Start/Stop/Show/Hide/Quit
@@ -45,8 +45,8 @@ The app stores configuration at `~/.windows-activity-tracker/config.json`. You c
 - `trackClipboard`: Enable clipboard monitoring (default: true)
 - `trackScreenshots`: Enable screenshot capture (default: false)
 - `screenshotOnWindowChange`: Capture screenshot on window change (default: true)
-- `screenshotOnClick`: Capture screenshot on mouse click (default: false)
 - `minScreenshotInterval`: Minimum time between screenshots in ms (default: 60000)
+- **Note**: When `trackScreenshots` is enabled, screenshots are automatically captured every 10 mouse clicks
 - `batchSize`: Number of events to buffer before sending (default: 20)
 
 See the config file for all available options.
@@ -200,9 +200,10 @@ See `src/types/events.ts` for complete type definitions.
 ### Screenshots Not Working
 
 - **macOS**: Grant Screen Recording permission in System Settings → Privacy & Security → Screen Recording
-- Check config: `trackScreenshots` and `screenshotOnWindowChange` must be `true`
+- Check config: `trackScreenshots` must be `true`
 - Check logs for screenshot capture errors
 - Verify `minScreenshotInterval` isn't too high for testing
+- Screenshots are captured on window change (if enabled) and automatically every 10 clicks
 
 ### No Events Sent to Backend
 

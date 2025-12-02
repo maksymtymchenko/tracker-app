@@ -66,7 +66,6 @@ export const AppConfigSchema = z.object({
   trackClipboard: z.boolean().default(true),
   trackScreenshots: z.boolean().default(true),
   screenshotOnWindowChange: z.boolean().default(true),
-  screenshotOnClick: z.boolean().default(false),
   minScreenshotInterval: z.number().int().positive().default(60000),
   screenshotBatchDelay: z.number().int().positive().default(5000),
   batchSize: z.number().int().positive().default(20),
@@ -87,7 +86,6 @@ function getDefaultConfig(): AppConfig {
     trackClipboard: true,
     trackScreenshots: true,
     screenshotOnWindowChange: true,
-    screenshotOnClick: false,
     minScreenshotInterval: 60000,
     screenshotBatchDelay: 5000,
     batchSize: 20,
@@ -127,6 +125,18 @@ export function ensureConfigFile(): AppConfig {
     // Auto-backfill missing fields and migrate localhost to production URL if needed
     let updated: AppConfig | null = null;
     const currentServerUrl = result.data.serverUrl || "";
+
+    // Remove deprecated fields (migration) - check raw parsed object
+    if ('screenshotOnClick' in parsed || 'quitPassword' in parsed) {
+      // result.data is already clean (Zod strips unknown fields), just mark for rewrite
+      updated = { ...result.data };
+      if ('screenshotOnClick' in parsed) {
+        console.log('[config] Removed deprecated field: screenshotOnClick');
+      }
+      if ('quitPassword' in parsed) {
+        console.log('[config] Removed deprecated field: quitPassword (now hardcoded)');
+      }
+    }
 
     // If serverUrl is localhost and we're in production, update it
     if (

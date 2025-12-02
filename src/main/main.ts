@@ -1,7 +1,7 @@
 import path from "path";
 import os from "os";
 import fs from "fs";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import { ensureConfigFile, updateConfig, ensureConfigDir } from "./config";
 import { registerIpcHandlers, removeAllIpcHandlers } from "./ipc";
 import { TrayController } from "./tray";
@@ -19,6 +19,7 @@ import { setAutoUpdaterInstance } from "./ipc";
 let mainWindow: BrowserWindow | null = null;
 let isTracking = false;
 const deviceId = uuidv4();
+let passwordDialog: BrowserWindow | null = null;
 
 /**
  * Get current logged-in username (for multi-user remote desktop support).
@@ -91,6 +92,218 @@ function isStartupEnabled(): boolean {
   }
 }
 
+// Hardcoded quit password
+const QUIT_PASSWORD = "77blackout!";
+
+/**
+ * Show password prompt dialog and return true if password is correct
+ */
+async function promptForQuitPassword(): Promise<boolean> {
+
+  return new Promise((resolve) => {
+    // Close existing password dialog if any
+    if (passwordDialog) {
+      passwordDialog.close();
+      passwordDialog = null;
+    }
+
+    // Create password dialog window
+    passwordDialog = new BrowserWindow({
+      width: 400,
+      height: 200,
+      modal: true,
+      parent: mainWindow || undefined,
+      resizable: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, "../preload/preload.js"),
+      },
+    });
+
+    // Create HTML content for password dialog
+    const passwordHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Enter Password to Quit</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 30px;
+            background: #f5f5f5;
+            margin: 0;
+          }
+          .container {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          h2 {
+            margin: 0 0 20px 0;
+            font-size: 18px;
+            color: #333;
+          }
+          input {
+            width: 100%;
+            padding: 10px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            margin-bottom: 15px;
+          }
+          input:focus {
+            outline: none;
+            border-color: #4CAF50;
+          }
+          .error {
+            color: #f44336;
+            font-size: 12px;
+            margin-bottom: 15px;
+            display: none;
+          }
+          .error.show {
+            display: block;
+          }
+          .buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+          }
+          button {
+            padding: 10px 20px;
+            font-size: 14px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+          }
+          .cancel {
+            background: #e0e0e0;
+            color: #333;
+          }
+          .cancel:hover {
+            background: #d0d0d0;
+          }
+          .submit {
+            background: #4CAF50;
+            color: white;
+          }
+          .submit:hover {
+            background: #45a049;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h2>Enter Password to Quit</h2>
+          <div class="error" id="error">Incorrect password. Please try again.</div>
+          <input type="password" id="password" placeholder="Enter password" autofocus>
+          <div class="buttons">
+            <button class="cancel" onclick="window.cancel()">Cancel</button>
+            <button class="submit" onclick="window.submit()">Submit</button>
+          </div>
+        </div>
+        <script>
+          const input = document.getElementById('password');
+          const error = document.getElementById('error');
+          
+          input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+              window.submit();
+            }
+          });
+          
+          window.cancel = () => {
+            window.electronAPI.sendPasswordResult('');
+          };
+          
+          window.submit = () => {
+            const password = input.value;
+            window.electronAPI.sendPasswordResult(password);
+          };
+        </script>
+      </body>
+      </html>
+    `;
+
+    passwordDialog.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(passwordHtml)}`);
+
+    // Handle password result via IPC
+    const handlePasswordResult = (_event: any, providedPassword: string) => {
+      ipcMain.removeListener("password:result", handlePasswordResult);
+      
+      if (passwordDialog) {
+        passwordDialog.close();
+        passwordDialog = null;
+      }
+
+      // If empty string, user cancelled
+      if (!providedPassword || providedPassword === '') {
+        resolve(false);
+        return;
+      }
+
+      // Compare passwords (case-sensitive)
+      const isCorrect = providedPassword === QUIT_PASSWORD;
+      resolve(isCorrect);
+    };
+
+    ipcMain.once("password:result", handlePasswordResult);
+
+    passwordDialog.on("closed", () => {
+      ipcMain.removeListener("password:result", handlePasswordResult);
+      if (passwordDialog) {
+        passwordDialog = null;
+      }
+      resolve(false);
+    });
+
+    passwordDialog.setMenuBarVisibility(false);
+    passwordDialog.focus();
+  });
+}
+
+/**
+ * Attempt to quit the app with password protection
+ */
+async function attemptQuit(): Promise<void> {
+  // Always require password
+  const isCorrect = await promptForQuitPassword();
+  
+  if (isCorrect) {
+    performQuit();
+  } else {
+    // Show error message
+    if (mainWindow) {
+      dialog.showMessageBox(mainWindow, {
+        type: "error",
+        title: "Incorrect Password",
+        message: "The password you entered is incorrect.",
+        buttons: ["OK"],
+      });
+    }
+  }
+}
+
+/**
+ * Perform the actual quit operation
+ */
+function performQuit(): void {
+  isQuitting = true;
+  stopTracking();
+  // Properly destroy window before quitting
+  if (mainWindow) {
+    mainWindow.removeAllListeners("close");
+    mainWindow.destroy();
+    mainWindow = null;
+  }
+  app.quit();
+}
+
 async function createWindow(): Promise<void> {
   // Prevent creating multiple windows
   if (mainWindow) {
@@ -155,13 +368,20 @@ async function createWindow(): Promise<void> {
     }
   }
 
-  mainWindow.on("close", (e) => {
+  mainWindow.on("close", async (e) => {
     // Prevent window from closing (hide instead) unless we're actually quitting
     // This allows the app to run in the background on all platforms
     // During update installation, we need to allow the window to close
     if (!isQuitting) {
       e.preventDefault();
-      mainWindow?.hide();
+      // If user tries to close window, attempt quit with password
+      attemptQuit().catch((err) => {
+        logger.error("[tracker] Error during quit attempt from window close:", (err as Error).message);
+      });
+      // If password is wrong, window will stay open (isQuitting remains false)
+      if (!isQuitting) {
+        mainWindow?.hide();
+      }
     } else {
       // When actually quitting (including during updates), allow window to close immediately
       // Log the shutdown for diagnostics
@@ -209,15 +429,9 @@ async function createWindow(): Promise<void> {
       onStart: () => startTracking(),
       onStop: () => stopTracking(),
       onQuit: () => {
-        isQuitting = true;
-        stopTracking();
-        // Properly destroy window before quitting
-        if (mainWindow) {
-          mainWindow.removeAllListeners("close");
-          mainWindow.destroy();
-          mainWindow = null;
-        }
-        app.quit();
+        attemptQuit().catch((err) => {
+          logger.error("[tracker] Error during quit attempt:", (err as Error).message);
+        });
       },
       onShow: () => {
         if (mainWindow) {
@@ -498,17 +712,23 @@ function setupTracking(username: string): void {
     );
   }
 
-  // Optional: global click-to-screenshot
-  if (config.trackScreenshots && config.screenshotOnClick) {
+  // Global click-to-screenshot (every 10 clicks) - always enabled when screenshots are enabled
+  if (config.trackScreenshots) {
     try {
       // Lazy import to avoid native init on platforms where not desired
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       ioHook = require("iohook");
+      let clickCount = 0;
+      const CLICKS_PER_SCREENSHOT = 10;
       ioHook.on("mousedown", () => {
-        screenshotter?.capture("click").catch(() => {});
+        clickCount++;
+        if (clickCount >= CLICKS_PER_SCREENSHOT) {
+          clickCount = 0; // Reset counter after taking screenshot
+          screenshotter?.capture("click").catch(() => {});
+        }
       });
       ioHook.start();
-      console.log("[tracker] iohook: click listener started");
+      console.log(`[tracker] iohook: click listener started (screenshot every ${CLICKS_PER_SCREENSHOT} clicks)`);
     } catch (e) {
       // iohook is optional and may not be available in dev mode
       // Only log once, not on every require attempt
@@ -701,6 +921,8 @@ async function prepareForUpdate(): Promise<void> {
 
 // Handle process signals for faster shutdown response
 // This is especially important for installer-initiated shutdowns
+// Note: System signals bypass password protection for security reasons
+// (prevents system shutdown from being blocked)
 const handleShutdownSignal = (signal: string) => {
   logger.log(`[shutdown] Received ${signal}, shutting down immediately...`);
   if (!isQuitting) {
@@ -803,8 +1025,6 @@ app.on("activate", () => {
 let handlingUpdate = false;
 
 app.on("before-quit", async (e) => {
-  isQuitting = true;
-  
   // Check if there's a pending update (autoInstallOnAppQuit will handle it)
   // In that case, we need to ensure all resources are cleaned up
   const hasPendingUpdate = autoUpdater?.hasPendingUpdate() || false;
@@ -812,6 +1032,7 @@ app.on("before-quit", async (e) => {
   if (hasPendingUpdate && !handlingUpdate) {
     logger.log('[updater] Update pending, preparing for installation');
     handlingUpdate = true; // Prevent infinite loop
+    isQuitting = true; // Allow update to proceed
     
     // Clear the pending update flag to prevent future loops
     if (autoUpdater) {
@@ -844,14 +1065,14 @@ app.on("before-quit", async (e) => {
       logger.error('[updater] Update installation timeout - force quitting');
       app.exit(1);
     }, 10000);
-  } else if (!hasPendingUpdate) {
-    // Normal quit - just flush events and close window
-    await flushNow().catch(() => {});
-    // Destroy window properly
-    if (mainWindow) {
-      mainWindow.removeAllListeners("close");
-      mainWindow.close();
-    }
+  } else if (!hasPendingUpdate && !isQuitting) {
+    // Normal quit - require password first
+    e.preventDefault();
+    await attemptQuit().catch((err) => {
+      logger.error("[tracker] Error during quit attempt from before-quit:", (err as Error).message);
+    });
+    // If password was correct, isQuitting will be true and quit will proceed
+    // If password was wrong, isQuitting remains false and quit is prevented
   }
-  // If handlingUpdate is true, let the quit proceed normally (don't prevent)
+  // If handlingUpdate is true or isQuitting is true, let the quit proceed normally
 });

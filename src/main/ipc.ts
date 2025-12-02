@@ -28,6 +28,10 @@ export function registerIpcHandlers(): void {
     }
     return { success: false, error: 'Auto-updater not initialized' };
   });
+  // Password dialog IPC
+  ipcMain.on('password:result', (event, password: string) => {
+    event.returnValue = undefined;
+  });
 }
 
 /**

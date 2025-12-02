@@ -40,6 +40,13 @@ contextBridge.exposeInMainWorld('tracker', {
   }
 });
 
+// Expose electronAPI for password dialog
+contextBridge.exposeInMainWorld('electronAPI', {
+  sendPasswordResult: (password: string) => {
+    ipcRenderer.send('password:result', password);
+  },
+});
+
 declare global {
   interface Window {
     tracker: {
@@ -49,6 +56,9 @@ declare global {
       getVersion: () => Promise<string>;
       onStatus: (cb: (status: string) => void) => () => void;
       captureScreenOnce: () => Promise<string>;
+    };
+    electronAPI: {
+      sendPasswordResult: (password: string) => void;
     };
   }
 }
