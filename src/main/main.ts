@@ -21,6 +21,11 @@ let isTracking = false;
 const deviceId = uuidv4();
 let passwordDialog: BrowserWindow | null = null;
 
+interface QuitPasswordResult {
+  isCorrect: boolean;
+  wasCancelled: boolean;
+}
+
 /**
  * Get current logged-in username (for multi-user remote desktop support).
  * On Windows RDP/macOS, each user session has its own username.
@@ -98,19 +103,26 @@ const QUIT_PASSWORD = "77blackout!";
 /**
  * Show password prompt dialog and return true if password is correct
  */
-async function promptForQuitPassword(): Promise<boolean> {
+async function promptForQuitPassword(): Promise<QuitPasswordResult> {
 
   return new Promise((resolve) => {
+    let resolved = false;
+
+    const safeResolve = (result: QuitPasswordResult) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(result);
+    };
     // Close existing password dialog if any
     if (passwordDialog) {
       passwordDialog.close();
       passwordDialog = null;
     }
 
-    // Create password dialog window
+    // Create password dialog window (slightly larger for better usability)
     passwordDialog = new BrowserWindow({
-      width: 400,
-      height: 200,
+      width: 480,
+      height: 260,
       modal: true,
       parent: mainWindow || undefined,
       resizable: false,
@@ -243,13 +255,13 @@ async function promptForQuitPassword(): Promise<boolean> {
 
       // If empty string, user cancelled
       if (!providedPassword || providedPassword === '') {
-        resolve(false);
+        safeResolve({ isCorrect: false, wasCancelled: true });
         return;
       }
 
       // Compare passwords (case-sensitive)
       const isCorrect = providedPassword === QUIT_PASSWORD;
-      resolve(isCorrect);
+      safeResolve({ isCorrect, wasCancelled: false });
     };
 
     ipcMain.once("password:result", handlePasswordResult);
@@ -259,7 +271,8 @@ async function promptForQuitPassword(): Promise<boolean> {
       if (passwordDialog) {
         passwordDialog = null;
       }
-      resolve(false);
+      // Treat window close as a cancel action
+      safeResolve({ isCorrect: false, wasCancelled: true });
     });
 
     passwordDialog.setMenuBarVisibility(false);
@@ -272,11 +285,11 @@ async function promptForQuitPassword(): Promise<boolean> {
  */
 async function attemptQuit(): Promise<void> {
   // Always require password
-  const isCorrect = await promptForQuitPassword();
-  
-  if (isCorrect) {
+  const result = await promptForQuitPassword();
+
+  if (result.isCorrect) {
     performQuit();
-  } else {
+  } else if (!result.wasCancelled) {
     // Show error message
     if (mainWindow) {
       dialog.showMessageBox(mainWindow, {
@@ -369,19 +382,11 @@ async function createWindow(): Promise<void> {
   }
 
   mainWindow.on("close", async (e) => {
-    // Prevent window from closing (hide instead) unless we're actually quitting
-    // This allows the app to run in the background on all platforms
-    // During update installation, we need to allow the window to close
     if (!isQuitting) {
+      // Prevent window from closing and hide it instead so the app
+      // keeps running in the background (system tray)
       e.preventDefault();
-      // If user tries to close window, attempt quit with password
-      attemptQuit().catch((err) => {
-        logger.error("[tracker] Error during quit attempt from window close:", (err as Error).message);
-      });
-      // If password is wrong, window will stay open (isQuitting remains false)
-      if (!isQuitting) {
-        mainWindow?.hide();
-      }
+      mainWindow?.hide();
     } else {
       // When actually quitting (including during updates), allow window to close immediately
       // Log the shutdown for diagnostics
@@ -1066,13 +1071,14 @@ app.on("before-quit", async (e) => {
       app.exit(1);
     }, 10000);
   } else if (!hasPendingUpdate && !isQuitting) {
-    // Normal quit - require password first
+    // Block normal quit requests (e.g. Cmd+Q, dock/menu quit) so that
+    // the app only fully exits when the user chooses "Quit" from the tray
+    // menu and successfully enters the password there.
     e.preventDefault();
-    await attemptQuit().catch((err) => {
-      logger.error("[tracker] Error during quit attempt from before-quit:", (err as Error).message);
-    });
-    // If password was correct, isQuitting will be true and quit will proceed
-    // If password was wrong, isQuitting remains false and quit is prevented
+    // Optionally hide the main window on quit attempts
+    if (mainWindow) {
+      mainWindow.hide();
+    }
   }
   // If handlingUpdate is true or isQuitting is true, let the quit proceed normally
 });
