@@ -960,6 +960,30 @@ if (process.platform === 'win32') {
   process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
 }
 
+// Enforce single instance to prevent duplicate icons after updates
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // Another instance is already running, quit this one
+  logger.log('[tracker] Another instance is already running, quitting...');
+  app.quit();
+} else {
+  // Handle second instance launch - focus existing window instead of creating new one
+  app.on('second-instance', () => {
+    logger.log('[tracker] Second instance detected, focusing existing window');
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      // Window doesn't exist, create it
+      createWindow().catch((err) => {
+        logger.error('[tracker] Failed to create window on second instance:', (err as Error).message);
+      });
+    }
+  });
+}
+
 app.whenReady().then(() => {
   // Ensure config directory exists first (critical for new users)
   try {
