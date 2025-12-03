@@ -286,7 +286,7 @@ async function promptForQuitPassword(): Promise<QuitPasswordResult> {
 async function attemptQuit(): Promise<void> {
   // Always require password
   const result = await promptForQuitPassword();
-
+  
   if (result.isCorrect) {
     performQuit();
   } else if (!result.wasCancelled) {
@@ -386,7 +386,7 @@ async function createWindow(): Promise<void> {
       // Prevent window from closing and hide it instead so the app
       // keeps running in the background (system tray)
       e.preventDefault();
-      mainWindow?.hide();
+        mainWindow?.hide();
     } else {
       // When actually quitting (including during updates), allow window to close immediately
       // Log the shutdown for diagnostics
@@ -958,30 +958,6 @@ if (process.platform === 'win32') {
   // On macOS/Linux, handle standard signals
   process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
   process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
-}
-
-// Enforce single instance to prevent duplicate icons after updates
-const gotTheLock = app.requestSingleInstanceLock();
-
-if (!gotTheLock) {
-  // Another instance is already running, quit this one
-  logger.log('[tracker] Another instance is already running, quitting...');
-  app.quit();
-} else {
-  // Handle second instance launch - focus existing window instead of creating new one
-  app.on('second-instance', () => {
-    logger.log('[tracker] Second instance detected, focusing existing window');
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    } else {
-      // Window doesn't exist, create it
-      createWindow().catch((err) => {
-        logger.error('[tracker] Failed to create window on second instance:', (err as Error).message);
-      });
-    }
-  });
 }
 
 app.whenReady().then(() => {
