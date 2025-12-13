@@ -717,23 +717,53 @@ function setupTracking(username: string): void {
     );
   }
 
-  // Global click-to-screenshot (every 10 clicks) - always enabled when screenshots are enabled
+  // Time-window based screenshot (every 10 seconds, only if clicks occurred)
+  // Screenshots are taken only if there were clicks in the 10-second window
   if (config.trackScreenshots) {
     try {
+      // Clean up existing interval if any
+      if (ioHook && (ioHook as any).screenshotInterval) {
+        clearInterval((ioHook as any).screenshotInterval);
+        (ioHook as any).screenshotInterval = null;
+      }
+      
       // Lazy import to avoid native init on platforms where not desired
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       ioHook = require("iohook");
       let clickCount = 0;
-      const CLICKS_PER_SCREENSHOT = 10;
+      let windowStartTime = Date.now();
+      const SCREENSHOT_WINDOW_MS = 10000; // 10 seconds
+      
+      // Track clicks in current window
       ioHook.on("mousedown", () => {
         clickCount++;
-        if (clickCount >= CLICKS_PER_SCREENSHOT) {
-          clickCount = 0; // Reset counter after taking screenshot
-          screenshotter?.capture("click").catch(() => {});
-        }
       });
+      
+      // Check every 10 seconds if we should take a screenshot
+      const screenshotInterval = setInterval(() => {
+        const now = Date.now();
+        const windowDuration = now - windowStartTime;
+        
+        // If we're past the 10-second window and had clicks, take a screenshot
+        if (windowDuration >= SCREENSHOT_WINDOW_MS && clickCount > 0) {
+          const clicksInWindow = clickCount;
+          screenshotter?.capture(`click_window_${clicksInWindow}_clicks`).catch(() => {});
+          
+          // Reset for next window
+          clickCount = 0;
+          windowStartTime = now;
+        } else if (windowDuration >= SCREENSHOT_WINDOW_MS) {
+          // No clicks in this window, just reset
+          clickCount = 0;
+          windowStartTime = now;
+        }
+      }, SCREENSHOT_WINDOW_MS);
+      
+      // Store interval reference for cleanup
+      (ioHook as any).screenshotInterval = screenshotInterval;
+      
       ioHook.start();
-      console.log(`[tracker] iohook: click listener started (screenshot every ${CLICKS_PER_SCREENSHOT} clicks)`);
+      console.log(`[tracker] iohook: click listener started (screenshot every ${SCREENSHOT_WINDOW_MS / 1000}s if clicks occurred)`);
     } catch (e) {
       // iohook is optional and may not be available in dev mode
       // Only log once, not on every require attempt
@@ -806,6 +836,11 @@ function stopTracking(): void {
   clipboardMon?.stop();
   if (ioHook) {
     try {
+      // Clear screenshot interval if it exists
+      if ((ioHook as any).screenshotInterval) {
+        clearInterval((ioHook as any).screenshotInterval);
+        (ioHook as any).screenshotInterval = null;
+      }
       ioHook.removeAllListeners("mousedown");
       ioHook.stop();
       console.log("[tracker] iohook: stopped");
