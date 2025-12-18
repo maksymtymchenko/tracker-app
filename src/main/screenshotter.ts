@@ -10,6 +10,7 @@ export interface ScreenshotterOptions {
   deviceId: string;
   domain: 'windows-desktop';
   minIntervalMs: number;
+  minWindowChangeIntervalMs?: number; // Shorter interval specifically for window changes
   requestCapture: (reason: string) => Promise<string>; // returns data URL
 }
 
@@ -23,6 +24,7 @@ export class Screenshotter {
   private hasPermission: boolean | null = null;
   private lastPermissionCheck = 0;
   private readonly PERMISSION_CHECK_INTERVAL = 30000; // Check every 30 seconds
+  private readonly DEFAULT_WINDOW_CHANGE_INTERVAL_MS = 5000; // 5 seconds default for window changes
 
   constructor(private readonly opts: ScreenshotterOptions, private readonly onShot: ScreenshotHandler) {}
 
@@ -92,8 +94,12 @@ export class Screenshotter {
   async capture(reason: string): Promise<void> {
     const now = Date.now();
     const timeSinceLastShot = now - this.lastAt;
-    if (timeSinceLastShot < this.opts.minIntervalMs) {
-      logger.log(`[tracker] Screenshot skipped: rate limited (${Math.round(timeSinceLastShot / 1000)}s since last, need ${this.opts.minIntervalMs / 1000}s)`);
+    // Use shorter interval for window changes to capture rapid window switches
+    const minInterval = reason === 'window_change'
+      ? (this.opts.minWindowChangeIntervalMs ?? this.DEFAULT_WINDOW_CHANGE_INTERVAL_MS)
+      : this.opts.minIntervalMs;
+    if (timeSinceLastShot < minInterval) {
+      logger.log(`[tracker] Screenshot skipped: rate limited (${Math.round(timeSinceLastShot / 1000)}s since last, need ${minInterval / 1000}s)`);
       return;
     }
     this.lastAt = now;
