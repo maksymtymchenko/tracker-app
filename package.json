@@ -1,6 +1,6 @@
 {
     "name": "windows-activity-tracker",
-    "version": "0.1.17",
+    "version": "0.1.18",
     "private": true,
     "description": "Cross-platform (Windows/macOS/Linux) desktop activity tracker built with Electron and TypeScript",
     "main": "dist/main/main.js",
@@ -37,7 +37,8 @@
             "**/node_modules/screenshot-desktop/**/*"
         ],
         "win": {
-            "target": [{
+            "target": [
+                {
                     "target": "nsis",
                     "arch": [
                         "x64"
@@ -63,7 +64,8 @@
             "artifactName": "${productName}-${version}-portable.exe"
         },
         "mac": {
-            "target": [{
+            "target": [
+                {
                     "target": "dmg",
                     "arch": [
                         "x64",
@@ -83,13 +85,15 @@
         "dmg": {
             "title": "${productName} ${version}"
         },
-        "publish": [{
-            "provider": "s3",
-            "bucket": "pub-783c37b34b55408d998282fd1a2781f6",
-            "region": "auto",
-            "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-            "channel": "latest"
-        }]
+        "publish": [
+            {
+                "provider": "s3",
+                "bucket": "pub-783c37b34b55408d998282fd1a2781f6",
+                "region": "auto",
+                "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+                "channel": "latest"
+            }
+        ]
     },
     "keywords": [
         "electron",
