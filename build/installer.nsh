@@ -70,19 +70,23 @@ FunctionEnd
   Pop ${result}
 !macroend
 
-; Function to detect processes in other user sessions
-; Uses PowerShell to check for processes owned by other users
-Function DetectOtherUserSessions
-  StrCpy $OtherUserProcesses 0
-  
+  ; Function to detect processes in other user sessions
+  ; Uses PowerShell to check for processes owned by other users
+  Function DetectOtherUserSessions
+    StrCpy $OtherUserProcesses 0
+    
   ; Use PowerShell to count processes owned by users other than current user
+  ; Get temp file for output
   GetTempFileName $ProcessListFile
-  ExecWait 'powershell -Command "$procs = Get-Process | Where-Object {$_.ProcessName -like ''*Windows*Activity*Tracker*'' -or $_.MainWindowTitle -like ''*Windows Activity Tracker*''}; $currentUser = $env:USERNAME; $otherCount = 0; foreach ($p in $procs) { try { $owner = (Get-CimInstance Win32_Process -Filter \"ProcessId = $($p.Id)\").GetOwner().User; if ($owner -and $owner -ne $currentUser) { $otherCount++ } } catch {} }; Write-Output $otherCount" > "$ProcessListFile"' $R0
   
-  ; Read the count from file
-  IfFileExists "$ProcessListFile" 0 done
-  ClearErrors
-  FileOpen $R1 "$ProcessListFile" r
+  ; Use cmd.exe to execute PowerShell with proper redirection handling
+  ; Wrap entire command in cmd /c to handle shell redirection
+  ExecWait 'cmd /c powershell -Command "$procs = Get-Process | Where-Object {$_.ProcessName -like ''*Windows*Activity*Tracker*'' -or $_.MainWindowTitle -like ''*Windows Activity Tracker*''}; $currentUser = $env:USERNAME; $otherCount = 0; foreach ($p in $procs) { try { $owner = (Get-CimInstance Win32_Process -Filter \"ProcessId = $($p.Id)\").GetOwner().User; if ($owner -and $owner -ne $currentUser) { $otherCount++ } } catch {} }; Write-Output $otherCount" > "$ProcessListFile"' $R0
+  
+    ; Read the count from file
+    IfFileExists "$ProcessListFile" 0 done
+    ClearErrors
+    FileOpen $R1 "$ProcessListFile" r
   ${If} ${Errors}
     Goto cleanup_temp
   ${EndIf}
@@ -126,9 +130,9 @@ Function DetectOtherUserSessions
     IntOp $OtherUserProcesses 0 + $R3
   ${EndIf}
   
-  cleanup_temp:
-  IfFileExists "$ProcessListFile" 0 done
-  Delete "$ProcessListFile"
+    cleanup_temp:
+    IfFileExists "$ProcessListFile" 0 done
+    Delete "$ProcessListFile"
   
   done:
 FunctionEnd
