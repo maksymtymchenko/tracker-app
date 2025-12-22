@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { nativeImage } from 'electron';
+import { nativeImage, powerMonitor } from 'electron';
 import { BaseEvent, ScreenshotData } from '../types/events';
 import { logger } from './logger';
 
@@ -25,8 +25,129 @@ export class Screenshotter {
   private lastPermissionCheck = 0;
   private readonly PERMISSION_CHECK_INTERVAL = 30000; // Check every 30 seconds
   private readonly DEFAULT_WINDOW_CHANGE_INTERVAL_MS = 5000; // 5 seconds default for window changes
+  private isSystemSleeping = false;
+  private lastWakeTime = Date.now();
 
-  constructor(private readonly opts: ScreenshotterOptions, private readonly onShot: ScreenshotHandler) {}
+  constructor(private readonly opts: ScreenshotterOptions, private readonly onShot: ScreenshotHandler) {
+    this.setupPowerMonitor();
+  }
+
+  /**
+   * Setup power monitor to detect system sleep/wake events
+   */
+  private setupPowerMonitor(): void {
+    try {
+      // Detect when system goes to sleep
+      powerMonitor.on('suspend', () => {
+        this.isSystemSleeping = true;
+        logger.log('[tracker] System sleep detected - pausing screenshots');
+      });
+
+      // Detect when system wakes up
+      powerMonitor.on('resume', () => {
+        this.isSystemSleeping = false;
+        this.lastWakeTime = Date.now();
+        logger.log('[tracker] System wake detected - resuming screenshots');
+      });
+
+      // On macOS, also check for display sleep
+      if (process.platform === 'darwin') {
+        powerMonitor.on('lock-screen', () => {
+          this.isSystemSleeping = true;
+          logger.log('[tracker] Screen locked - pausing screenshots');
+        });
+
+        powerMonitor.on('unlock-screen', () => {
+          this.isSystemSleeping = false;
+          this.lastWakeTime = Date.now();
+          logger.log('[tracker] Screen unlocked - resuming screenshots');
+        });
+      }
+    } catch (err) {
+      logger.error('[tracker] Failed to setup power monitor:', (err as Error).message);
+    }
+  }
+
+  /**
+   * Check if system is currently sleeping
+   * Also checks if we just woke up (within last 2 seconds) to avoid immediate screenshots
+   */
+  private isSystemAsleep(): boolean {
+    if (this.isSystemSleeping) {
+      return true;
+    }
+    
+    // Don't take screenshots immediately after wake (wait 2 seconds)
+    const timeSinceWake = Date.now() - this.lastWakeTime;
+    if (timeSinceWake < 2000) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Detect if a screenshot is mostly black (indicating system sleep or display off)
+   * Returns true if the image is mostly black/dark
+   */
+  private isBlackScreenshot(img: Electron.NativeImage): boolean {
+    try {
+      const size = img.getSize();
+      const width = size.width;
+      const height = size.height;
+      
+      // Resize to a smaller image for faster analysis (100x100 is enough to detect black screens)
+      const analysisSize = 100;
+      const scale = Math.min(analysisSize / width, analysisSize / height);
+      const scaledWidth = Math.floor(width * scale);
+      const scaledHeight = Math.floor(height * scale);
+      
+      // Create a resized copy for analysis
+      const resized = img.resize({ width: scaledWidth, height: scaledHeight });
+      
+      // Get bitmap buffer (RGBA format)
+      const buffer = resized.getBitmap();
+      
+      if (!buffer || buffer.length === 0) {
+        // If we can't get bitmap, don't filter
+        return false;
+      }
+      
+      let darkPixelCount = 0;
+      const threshold = 30; // RGB threshold for "black" (0-255, lower = darker)
+      const totalPixels = scaledWidth * scaledHeight;
+      
+      // Check pixels in the resized image
+      for (let i = 0; i < buffer.length; i += 4) {
+        if (i + 2 >= buffer.length) break;
+        
+        const r = buffer[i];
+        const g = buffer[i + 1];
+        const b = buffer[i + 2];
+        
+        // Calculate brightness
+        const brightness = (r + g + b) / 3;
+        
+        if (brightness < threshold) {
+          darkPixelCount++;
+        }
+      }
+      
+      // If more than 90% of pixels are dark, consider it a black screenshot
+      const darkRatio = darkPixelCount / totalPixels;
+      const isBlack = darkRatio > 0.9;
+      
+      if (isBlack) {
+        logger.log(`[tracker] Black screenshot detected: ${Math.round(darkRatio * 100)}% dark pixels (${scaledWidth}x${scaledHeight} analysis)`);
+      }
+      
+      return isBlack;
+    } catch (err) {
+      logger.error('[tracker] Error detecting black screenshot:', (err as Error).message);
+      // On error, don't filter - allow the screenshot through
+      return false;
+    }
+  }
 
   /**
    * Check if Screen Recording permission is granted on macOS.
@@ -92,6 +213,12 @@ export class Screenshotter {
   }
 
   async capture(reason: string): Promise<void> {
+    // Check if system is sleeping first
+    if (this.isSystemAsleep()) {
+      logger.log(`[tracker] Screenshot skipped: system is sleeping (reason: ${reason})`);
+      return;
+    }
+
     const now = Date.now();
     const timeSinceLastShot = now - this.lastAt;
     // Use shorter interval for window changes to capture rapid window switches
@@ -148,6 +275,13 @@ export class Screenshotter {
         }
         const imgSize = img.getSize();
         logger.log(`[tracker] Screenshot captured: ${imgSize.width}x${imgSize.height}, ${buf.length} bytes`);
+        
+        // Check if screenshot is black (system might be sleeping)
+        if (this.isBlackScreenshot(img)) {
+          logger.log(`[tracker] Screenshot skipped: black screenshot detected (likely system sleep)`);
+          return;
+        }
+        
         dataUrl = img.toDataURL();
         if (!dataUrl || !dataUrl.startsWith('data:image')) {
           throw new Error('screenshot-desktop returned invalid image data');
@@ -198,6 +332,19 @@ export class Screenshotter {
           return;
         }
         logger.log(`[tracker] screenshot fallback succeeded: ${fallbackResult.length} bytes`);
+        
+        // Check if fallback screenshot is black
+        try {
+          const fallbackImg = nativeImage.createFromDataURL(fallbackResult);
+          if (!fallbackImg.isEmpty() && this.isBlackScreenshot(fallbackImg)) {
+            logger.log(`[tracker] Screenshot skipped: black screenshot detected in fallback (likely system sleep)`);
+            return;
+          }
+        } catch (err) {
+          logger.error('[tracker] Error checking fallback screenshot for black screen:', (err as Error).message);
+          // Continue with screenshot if check fails
+        }
+        
         dataUrl = fallbackResult;
       } catch (fallbackErr) {
         const fallbackErrorMsg = (fallbackErr as Error).message || String(fallbackErr);
