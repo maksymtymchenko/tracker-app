@@ -4,6 +4,7 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 import { logger } from "./logger";
+import { WindowsProcessManager } from "./windowsProcessManager";
 
 /**
  * Auto-updater configuration for Cloudflare R2 bucket
@@ -15,12 +16,23 @@ export class AutoUpdater {
   private readonly prepareForUpdate: (() => Promise<void>) | null;
   private updateDownloaded = false;
   private cacheDir: string;
+  private processManager: WindowsProcessManager | null = null;
 
   constructor(prepareForUpdate?: () => Promise<void>) {
     this.prepareForUpdate = prepareForUpdate || null;
     // Configure auto-updater
     electronAutoUpdater.autoDownload = false; // Don't auto-download, let user choose
     electronAutoUpdater.autoInstallOnAppQuit = true; // Install on quit after download
+
+    // Initialize Windows process manager for multi-user session support
+    if (process.platform === "win32") {
+      try {
+        this.processManager = new WindowsProcessManager();
+        logger.log("[updater] Windows process manager initialized");
+      } catch (err) {
+        logger.error(`[updater] Failed to initialize process manager: ${(err as Error).message}`);
+      }
+    }
 
     // Set cache directory to user-writable location to avoid permission issues
     // On Windows, use AppData to ensure write permissions
@@ -182,6 +194,119 @@ export class AutoUpdater {
   }
 
   /**
+   * Check for processes running in other user sessions and handle them
+   * Returns true if it's safe to proceed with update, false otherwise
+   */
+  private async checkAndTerminateOtherSessions(): Promise<boolean> {
+    if (process.platform !== "win32" || !this.processManager) {
+      return true; // Not Windows or process manager not available
+    }
+
+    try {
+      const processes = await this.processManager.detectAllProcesses();
+      
+      if (processes.length === 0) {
+        logger.log("[updater] No processes found across all sessions");
+        return true;
+      }
+
+      // Check if there are processes from other users (which indicates other sessions)
+      const currentUsername = (process.env.USERNAME || process.env.USER || '').toLowerCase();
+      const otherUserProcesses = processes.filter(p => 
+        p.username.toLowerCase() !== currentUsername
+      );
+      
+      // If all processes are from current user, we can proceed (they'll be terminated by prepareForUpdate)
+      if (otherUserProcesses.length === 0) {
+        logger.log("[updater] All processes are from current user session");
+        return true;
+      }
+
+      // Found processes in other sessions - show dialog
+      const statusMessage = await this.processManager.getProcessStatusMessage();
+      
+      const result = await dialog.showMessageBox({
+        type: "warning",
+        title: "Update Requires Closing Application",
+        message: "The application is running in other user sessions.",
+        detail: `${statusMessage}\n\nWould you like to attempt to close all instances? Administrator privileges may be required.`,
+        buttons: ["Close All Instances", "Cancel Update"],
+        defaultId: 0,
+        cancelId: 1,
+      });
+
+      if (result.response !== 0) {
+        logger.log("[updater] User cancelled update due to processes in other sessions");
+        return false;
+      }
+
+      // Attempt to terminate all processes
+      logger.log("[updater] Attempting to terminate processes across all sessions");
+      const terminationResult = await this.processManager.terminateAllProcesses(true);
+
+      if (terminationResult.success) {
+        logger.log(`[updater] Successfully terminated ${terminationResult.processesTerminated} process(es)`);
+        await dialog.showMessageBox({
+          type: "info",
+          title: "Processes Closed",
+          message: `Successfully closed ${terminationResult.processesTerminated} instance(s) of the application.`,
+          detail: "The update can now proceed.",
+          buttons: ["OK"],
+        });
+        return true;
+      } else {
+        // Some processes couldn't be terminated
+        const errorDetails = terminationResult.errors.length > 0
+          ? `\n\nErrors:\n${terminationResult.errors.slice(0, 3).join('\n')}`
+          : '';
+        
+        let message = `Could not close all instances of the application.\n\n`;
+        message += `Closed: ${terminationResult.processesTerminated} of ${terminationResult.processesFound}\n`;
+        message += `Remaining: ${terminationResult.processesFound - terminationResult.processesTerminated}`;
+        
+        if (terminationResult.requiresAdmin) {
+          message += `\n\nAdministrator privileges are required to close processes in other user sessions.`;
+          message += `\n\nPlease either:\n`;
+          message += `1. Run this application as Administrator and try again, or\n`;
+          message += `2. Sign out all other user sessions, or\n`;
+          message += `3. Manually close the application in other sessions using Task Manager.`;
+        }
+
+        const userChoice = await dialog.showMessageBox({
+          type: "error",
+          title: "Cannot Close All Instances",
+          message: message,
+          detail: errorDetails,
+          buttons: ["Retry", "Cancel Update"],
+          defaultId: 0,
+          cancelId: 1,
+        });
+
+        if (userChoice.response === 0) {
+          // Retry
+          return await this.checkAndTerminateOtherSessions();
+        }
+
+        return false;
+      }
+    } catch (err) {
+      logger.error("[updater] Error checking processes:", (err as Error).message);
+      // On error, show warning but allow update to proceed
+      // The installer will handle process termination
+      const result = await dialog.showMessageBox({
+        type: "warning",
+        title: "Update Warning",
+        message: "Could not verify if the application is running in other user sessions.",
+        detail: "The update will proceed, but may fail if the application is running in another user's session.\n\nIf the update fails, please close all instances of the application manually.",
+        buttons: ["Continue Anyway", "Cancel"],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      return result.response === 0;
+    }
+  }
+
+  /**
    * Show dialog when update is downloaded and ready to install
    */
   private showUpdateDownloadedDialog(info: { version: string }): void {
@@ -201,6 +326,16 @@ export class AutoUpdater {
         if (result.response === 0) {
           // Clear the pending update flag to prevent loops
           this.updateDownloaded = false;
+          
+          // On Windows, check for processes in other user sessions before proceeding
+          if (process.platform === "win32" && this.processManager) {
+            const canProceed = await this.checkAndTerminateOtherSessions();
+            if (!canProceed) {
+              logger.log("[updater] Update cancelled due to processes in other sessions");
+              this.updateDownloaded = true; // Restore flag so user can try again
+              return;
+            }
+          }
           
           // Prepare for update by cleaning up all resources
           try {
@@ -321,6 +456,38 @@ export class AutoUpdater {
       }
     } catch (err) {
       logger.warn(`[updater] Could not clear update cache: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Check for processes running in other user sessions (Windows only)
+   * Returns information about running processes
+   */
+  public async checkOtherSessions(): Promise<{ hasOtherSessions: boolean; message: string }> {
+    if (process.platform !== "win32" || !this.processManager) {
+      return { hasOtherSessions: false, message: "Not applicable on this platform" };
+    }
+
+    try {
+      const processes = await this.processManager.detectAllProcesses();
+      const message = await this.processManager.getProcessStatusMessage();
+      
+      // Check if there are processes from other users (which indicates other sessions)
+      const currentUsername = (process.env.USERNAME || process.env.USER || '').toLowerCase();
+      const otherUserProcesses = processes.filter(p => 
+        p.username.toLowerCase() !== currentUsername
+      );
+      
+      return {
+        hasOtherSessions: otherUserProcesses.length > 0,
+        message,
+      };
+    } catch (err) {
+      logger.error("[updater] Error checking other sessions:", (err as Error).message);
+      return {
+        hasOtherSessions: false,
+        message: `Error checking processes: ${(err as Error).message}`,
+      };
     }
   }
 
