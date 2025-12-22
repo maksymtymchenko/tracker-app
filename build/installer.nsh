@@ -6,144 +6,243 @@
 !include "LogicLib.nsh"
 !include "WinMessages.nsh"
 
-!macro customCloseApp
-  ; Variables for process detection and shutdown attempts
-  Var /GLOBAL ProcessFound
-  Var /GLOBAL ShutdownAttempt
-  Var /GLOBAL MaxShutdownAttempts
-  Var /GLOBAL TotalWaitTime
-  Var /GLOBAL CurrentUser
-  Var /GLOBAL OtherUserProcesses
-  Var /GLOBAL ProcessListFile
+; ============================================================================
+; VARIABLE DECLARATIONS (MUST be outside macros)
+; ============================================================================
+Var ProcessFound
+Var ShutdownAttempt
+Var MaxShutdownAttempts
+Var TotalWaitTime
+Var CurrentUser
+Var OtherUserProcesses
+Var ProcessListFile
+Var TaskListOutputFile
+
+; ============================================================================
+; HELPER FUNCTIONS (defined outside macro to avoid name collisions)
+; ============================================================================
+
+; String contains check function (renamed to avoid macro collision)
+; Returns: $R0 = substring if found, empty string if not found
+Function _StrContainsImpl
+  Exch $R0  ; substring
+  Exch
+  Exch $R1  ; string
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
   
-  ; Initialize variables
-  StrCpy $ShutdownAttempt 0
-  StrCpy $MaxShutdownAttempts 3
-  StrCpy $TotalWaitTime 0
+  StrCpy $R2 $R1
+  StrCpy $R3 $R0
+  StrLen $R4 $R0
+  StrCpy $R5 0
+  
+  loop:
+    StrCpy $R0 $R2 $R4 $R5
+    StrCmp $R0 $R3 done
+    StrCmp $R5 $R1 notfound
+    IntOp $R5 $R5 + 1
+    Goto loop
+  
+  notfound:
+    StrCpy $R0 ""
+    Goto done2
+  
+  done:
+    StrCpy $R0 $R3
+  
+  done2:
+    Pop $R5
+    Pop $R4
+    Pop $R3
+    Pop $R2
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
+; Macro wrapper for string contains check
+; Usage: ${StrContains} $result "substring" "string"
+!macro StrContains result substring string
+  Push "${substring}"
+  Push "${string}"
+  Call _StrContainsImpl
+  Pop ${result}
+!macroend
+
+; Function to detect processes in other user sessions
+; Uses PowerShell to check for processes owned by other users
+Function DetectOtherUserSessions
   StrCpy $OtherUserProcesses 0
   
-  ; Get current username
-  ReadEnvStr $CurrentUser USERNAME
+  ; Use PowerShell to count processes owned by users other than current user
+  GetTempFileName $ProcessListFile
+  ExecWait 'powershell -Command "$procs = Get-Process | Where-Object {$_.ProcessName -like ''*Windows*Activity*Tracker*'' -or $_.MainWindowTitle -like ''*Windows Activity Tracker*''}; $currentUser = $env:USERNAME; $otherCount = 0; foreach ($p in $procs) { try { $owner = (Get-CimInstance Win32_Process -Filter \"ProcessId = $($p.Id)\").GetOwner().User; if ($owner -and $owner -ne $currentUser) { $otherCount++ } } catch {} }; Write-Output $otherCount" > "$ProcessListFile"' $R0
   
-  ; Function to detect processes in other user sessions
-  ; Uses PowerShell to check for processes owned by other users
-  Function DetectOtherUserSessions
-    StrCpy $OtherUserProcesses 0
-    
-    ; Use PowerShell to count processes owned by users other than current user
-    GetTempFileName $ProcessListFile
-    ExecWait 'powershell -Command "$procs = Get-Process | Where-Object {$_.ProcessName -like ''*Windows*Activity*Tracker*'' -or $_.MainWindowTitle -like ''*Windows Activity Tracker*''}; $currentUser = $env:USERNAME; $otherCount = 0; foreach ($p in $procs) { try { $owner = (Get-CimInstance Win32_Process -Filter \"ProcessId = $($p.Id)\").GetOwner().User; if ($owner -and $owner -ne $currentUser) { $otherCount++ } } catch {} }; Write-Output $otherCount" > "$ProcessListFile"' $R0
-    
-    ; Read the count from file
-    IfFileExists "$ProcessListFile" 0 done
-    ClearErrors
-    FileOpen $R1 "$ProcessListFile" r
-    ${If} ${Errors}
-      Goto cleanup_temp
-    ${EndIf}
-    
-    ; Read first line (should contain just the number)
-    FileRead $R1 $R2
-    FileClose $R1
-    
-    ; Extract number from the line (remove any whitespace/carriage returns)
-    ; Simple approach: find first digit sequence
-    StrCpy $R3 ""  ; Result number string
-    StrCpy $R4 0   ; Character index
-    StrLen $R5 $R2  ; Length of line
-    
-    parse_loop:
-      ${If} $R4 >= $R5
-        Goto parse_done
-      ${EndIf}
-      StrCpy $R6 $R2 1 $R4  ; Get character at index
-      ; Check if it's a digit (0-9)
-      StrCmp $R6 "0" is_digit
-      StrCmp $R6 "1" is_digit
-      StrCmp $R6 "2" is_digit
-      StrCmp $R6 "3" is_digit
-      StrCmp $R6 "4" is_digit
-      StrCmp $R6 "5" is_digit
-      StrCmp $R6 "6" is_digit
-      StrCmp $R6 "7" is_digit
-      StrCmp $R6 "8" is_digit
-      StrCmp $R6 "9" is_digit
-      Goto next_char
-      is_digit:
-        StrCpy $R3 "$R3$R6"
-      next_char:
-        IntOp $R4 $R4 + 1
-        Goto parse_loop
-    
-    parse_done:
-    ; Convert string to number
-    ${If} $R3 != ""
-      IntOp $OtherUserProcesses 0 + $R3
-    ${EndIf}
-    
-    cleanup_temp:
-    IfFileExists "$ProcessListFile" 0 done
-    Delete "$ProcessListFile"
-    
-    done:
-  FunctionEnd
+  ; Read the count from file
+  IfFileExists "$ProcessListFile" 0 done
+  ClearErrors
+  FileOpen $R1 "$ProcessListFile" r
+  ${If} ${Errors}
+    Goto cleanup_temp
+  ${EndIf}
   
-  ; Function to check if application is running using multiple methods
-  Function CheckAppRunning
-    StrCpy $ProcessFound 0
-    
-    ; Method 1: Check for window (current session only)
-    FindWindow $R0 "" "Windows Activity Tracker"
-    ${If} $R0 != 0
-      StrCpy $ProcessFound 1
-      Goto check_done
-    ${EndIf}
-    
-    ; Method 2: Check for process using tasklist (all sessions)
-    ; This is more reliable for background processes and detects cross-session processes
-    ExecWait 'tasklist /FI "IMAGENAME eq Windows Activity Tracker.exe" /FO CSV | findstr /C:"Windows Activity Tracker.exe"' $R1
-    ${If} $R1 == 0
-      StrCpy $ProcessFound 1
-      Goto check_done
-    ${EndIf}
-    
-    ; Method 3: Alternative process name check (in case of spaces in filename)
-    ExecWait 'tasklist /FI "IMAGENAME eq WindowsActivityTracker.exe" /FO CSV | findstr /C:"WindowsActivityTracker.exe"' $R2
-    ${If} $R2 == 0
-      StrCpy $ProcessFound 1
-      Goto check_done
-    ${EndIf}
-    
-    check_done:
-  FunctionEnd
+  ; Read first line (should contain just the number)
+  FileRead $R1 $R2
+  FileClose $R1
   
-  ; Function to send graceful shutdown signal
-  Function GracefulShutdown
-    ; Try to close gracefully by sending WM_CLOSE message
-    FindWindow $0 "" "Windows Activity Tracker"
+  ; Extract number from the line (remove any whitespace/carriage returns)
+  ; Simple approach: find first digit sequence
+  StrCpy $R3 ""  ; Result number string
+  StrCpy $R4 0   ; Character index
+  StrLen $R5 $R2  ; Length of line
+  
+  parse_loop:
+    ${If} $R4 >= $R5
+      Goto parse_done
+    ${EndIf}
+    StrCpy $R6 $R2 1 $R4  ; Get character at index
+    ; Check if it's a digit (0-9)
+    StrCmp $R6 "0" is_digit
+    StrCmp $R6 "1" is_digit
+    StrCmp $R6 "2" is_digit
+    StrCmp $R6 "3" is_digit
+    StrCmp $R6 "4" is_digit
+    StrCmp $R6 "5" is_digit
+    StrCmp $R6 "6" is_digit
+    StrCmp $R6 "7" is_digit
+    StrCmp $R6 "8" is_digit
+    StrCmp $R6 "9" is_digit
+    Goto next_char
+    is_digit:
+      StrCpy $R3 "$R3$R6"
+    next_char:
+      IntOp $R4 $R4 + 1
+      Goto parse_loop
+  
+  parse_done:
+  ; Convert string to number
+  ${If} $R3 != ""
+    IntOp $OtherUserProcesses 0 + $R3
+  ${EndIf}
+  
+  cleanup_temp:
+  IfFileExists "$ProcessListFile" 0 done
+  Delete "$ProcessListFile"
+  
+  done:
+FunctionEnd
+
+; Function to check if application is running using multiple methods
+; Returns: $ProcessFound = 1 if running, 0 if not
+Function CheckAppRunning
+  StrCpy $ProcessFound 0
+  
+  ; Method 1: Check for window (non-authoritative - Electron apps may not have visible windows)
+  ; This is only used as a hint, not definitive detection
+  FindWindow $R0 "" "Windows Activity Tracker"
+  ${If} $R0 != 0
+    ; Window found - but verify with process check
+    ; Don't set ProcessFound yet, continue to process check
+  ${EndIf}
+  
+  ; Method 2: Check for process using tasklist with file output (more reliable)
+  ; This detects all sessions and is more reliable than ExecWait exit codes
+  GetTempFileName $TaskListOutputFile
+  ClearErrors
+  ExecWait 'tasklist /FI "IMAGENAME eq Windows Activity Tracker.exe" /FO CSV > "$TaskListOutputFile"' $R1
+  
+  ; Check if file exists and has content (more reliable than exit code)
+  IfFileExists "$TaskListOutputFile" 0 check_alt_name
+  ClearErrors
+  FileOpen $R2 "$TaskListOutputFile" r
+  ${If} ${Errors}
+    FileClose $R2
+    Goto check_alt_name
+  ${EndIf}
+  
+  ; Read first line to check if process was found
+  FileRead $R2 $R3
+  FileClose $R2
+  Delete "$TaskListOutputFile"
+  
+  ; Check if output contains the process name (CSV format includes headers, so check for .exe)
+  ${StrContains} $R4 "Windows Activity Tracker.exe" $R3
+  ${If} $R4 != ""
+    StrCpy $ProcessFound 1
+    Goto check_done
+  ${EndIf}
+  
+  ; Method 3: Alternative process name check (in case of spaces in filename)
+  check_alt_name:
+  GetTempFileName $TaskListOutputFile
+  ClearErrors
+  ExecWait 'tasklist /FI "IMAGENAME eq WindowsActivityTracker.exe" /FO CSV > "$TaskListOutputFile"' $R2
+  
+  IfFileExists "$TaskListOutputFile" 0 check_done
+  ClearErrors
+  FileOpen $R2 "$TaskListOutputFile" r
+  ${If} ${Errors}
+    FileClose $R2
+    Goto check_done
+  ${EndIf}
+  
+  FileRead $R2 $R3
+  FileClose $R2
+  Delete "$TaskListOutputFile"
+  
+  ${StrContains} $R4 "WindowsActivityTracker.exe" $R3
+  ${If} $R4 != ""
+    StrCpy $ProcessFound 1
+    Goto check_done
+  ${EndIf}
+  
+  check_done:
+FunctionEnd
+
+; Function to send graceful shutdown signal
+; Returns: $0 = 1 if successful, 0 if failed
+Function GracefulShutdown
+  ; Try to close gracefully by sending WM_CLOSE message
+  ; Note: FindWindow may not find Electron apps in tray, so this is best-effort
+  FindWindow $0 "" "Windows Activity Tracker"
+  ${If} $0 != 0
+    SendMessage $0 ${WM_CLOSE} 0 0 /TIMEOUT=5000
+  ${EndIf}
+  
+  ; Wait for process to close (check every 500ms for up to 8 seconds)
+  ; Increased timeout for per-user installations which may need more time
+  ${For} $R0 1 16
+    Sleep 500
+    Call CheckAppRunning
+    ${If} $ProcessFound == 0
+      StrCpy $0 1  ; Success
+      Goto graceful_shutdown_done
+    ${EndIf}
+  ${Next}
+  
+  StrCpy $0 0  ; Failed
+  graceful_shutdown_done:
+FunctionEnd
+
+; Function to force close application
+; For per-user installations, only closes processes in current user session
+; For per-machine installations, attempts cross-session termination
+; Returns: $0 = 1 if successful, 0 if failed
+Function ForceCloseApp
+  ; Check if this is a per-user installation by checking installation directory
+  StrCpy $R7 $INSTDIR
+  ${StrContains} $R8 "AppData" $R7
+  ${If} $R8 != ""
+    ; Per-user installation - kill without USERNAME filter
+    ; For per-user installs, only current user's processes can be running
+    ; USERNAME filter is unreliable and unnecessary here
+    ExecWait 'taskkill /F /IM "Windows Activity Tracker.exe" /T' $0
     ${If} $0 != 0
-      SendMessage $0 ${WM_CLOSE} 0 0 /TIMEOUT=5000
+      ExecWait 'taskkill /F /IM "WindowsActivityTracker.exe" /T' $0
     ${EndIf}
-    
-    ; Wait for process to close (check every 500ms for 5 seconds)
-    ${For} $R0 1 10
-      Sleep 500
-      Call CheckAppRunning
-      ${If} $ProcessFound == 0
-        StrCpy $0 1  ; Success
-        Goto graceful_shutdown_done
-      ${EndIf}
-    ${Next}
-    
-    StrCpy $0 0  ; Failed
-    graceful_shutdown_done:
-  FunctionEnd
-  
-  ; Function to force close application (attempts cross-session termination)
-  Function ForceCloseApp
-    ; Try multiple process names and force close methods
-    ; /F = force, /T = terminate child processes, /FI = filter
-    
+  ${Else}
+    ; Per-machine installation - try to close all sessions
     ; Method 1: Standard executable name (all sessions)
     ExecWait 'taskkill /F /IM "Windows Activity Tracker.exe" /T' $0
     
@@ -156,16 +255,31 @@
     ${If} $0 != 0
       ExecWait 'taskkill /F /FI "WINDOWTITLE eq Windows Activity Tracker*" /T' $0
     ${EndIf}
-    
-    ; Wait for process to terminate and verify
-    Sleep 2000  ; Give more time for process cleanup
-    Call CheckAppRunning
-    ${If} $ProcessFound == 0
-      StrCpy $0 1  ; Success
-    ${Else}
-      StrCpy $0 0  ; Failed
-    ${EndIf}
-  FunctionEnd
+  ${EndIf}
+  
+  ; Wait for process to terminate and verify
+  ; Increased wait time for per-user installations
+  Sleep 3000  ; Give more time for process cleanup and file handle release
+  Call CheckAppRunning
+  ${If} $ProcessFound == 0
+    StrCpy $0 1  ; Success
+  ${Else}
+    StrCpy $0 0  ; Failed
+  ${EndIf}
+FunctionEnd
+
+; ============================================================================
+; MAIN MACRO
+; ============================================================================
+!macro customCloseApp
+  ; Initialize variables
+  StrCpy $ShutdownAttempt 0
+  StrCpy $MaxShutdownAttempts 3
+  StrCpy $TotalWaitTime 0
+  StrCpy $OtherUserProcesses 0
+  
+  ; Get current username
+  ReadEnvStr $CurrentUser USERNAME
   
   ; Main shutdown logic
   Call CheckAppRunning
@@ -173,7 +287,20 @@
     Goto shutdown_success
   ${EndIf}
   
-  ; Check for processes in other user sessions
+  ; Check if this is a per-user installation by checking installation directory
+  ; Per-user installations are typically in AppData\Local, per-machine in Program Files
+  ; For per-user installations, we only need to close processes in the current user session
+  ; For per-machine installations, we need to check all user sessions
+  ; Simple check: if INSTDIR contains "AppData", it's per-user
+  StrCpy $R7 $INSTDIR
+  ; Use simple string search (case-insensitive check)
+  ${StrContains} $R8 "AppData" $R7
+  ${If} $R8 != ""
+    ; Per-user installation - only check current user processes
+    Goto shutdown_loop
+  ${EndIf}
+  
+  ; Per-machine installation - check for processes in other user sessions
   Call DetectOtherUserSessions
   ${If} $OtherUserProcesses > 0
     ; Found processes in other user sessions - show special dialog
@@ -267,21 +394,37 @@
     ; Do one final comprehensive check
     Sleep 2000
     Call CheckAppRunning
-    Call DetectOtherUserSessions
-    ${If} $ProcessFound == 0
-      Goto shutdown_success
-    ${ElseIf} $OtherUserProcesses > 0
-      ; Still has other user processes - show multi-user dialog
-      Goto show_multi_user_instructions
+    ; Only check other user sessions for per-machine installations
+    StrCpy $R7 $INSTDIR
+    ${StrContains} $R8 "AppData" $R7
+    ${If} $R8 == ""
+      ; Per-machine installation - check other sessions
+      Call DetectOtherUserSessions
+      ${If} $ProcessFound == 0
+        Goto shutdown_success
+      ${ElseIf} $OtherUserProcesses > 0
+        ; Still has other user processes - show multi-user dialog
+        Goto show_multi_user_instructions
+      ${EndIf}
+    ${Else}
+      ; Per-user installation - only check current session
+      ${If} $ProcessFound == 0
+        Goto shutdown_success
+      ${EndIf}
     ${EndIf}
   ${EndIf}
   
   ; All attempts failed - show manual close dialog with better instructions
   manual_close_dialog:
-    ; Check again for other user sessions
-    Call DetectOtherUserSessions
-    ${If} $OtherUserProcesses > 0
-      Goto show_multi_user_instructions
+    ; Only check other user sessions for per-machine installations
+    StrCpy $R7 $INSTDIR
+    ${StrContains} $R8 "AppData" $R7
+    ${If} $R8 == ""
+      ; Per-machine installation - check other sessions
+      Call DetectOtherUserSessions
+      ${If} $OtherUserProcesses > 0
+        Goto show_multi_user_instructions
+      ${EndIf}
     ${EndIf}
     
     ; Only current session processes - show standard instructions
@@ -300,17 +443,34 @@
     ; Give the user a moment to close the app
     Sleep 1000
     Call CheckAppRunning
-    Call DetectOtherUserSessions
-    ${If} $ProcessFound == 0
-      Goto shutdown_success
-    ${ElseIf} $OtherUserProcesses > 0
-      Goto show_multi_user_instructions
+    ; Only check other user sessions for per-machine installations
+    StrCpy $R7 $INSTDIR
+    ${StrContains} $R8 "AppData" $R7
+    ${If} $R8 == ""
+      ; Per-machine installation - check other sessions
+      Call DetectOtherUserSessions
+      ${If} $ProcessFound == 0
+        Goto shutdown_success
+      ${ElseIf} $OtherUserProcesses > 0
+        Goto show_multi_user_instructions
+      ${Else}
+        ; Show a simpler retry dialog
+        MessageBox MB_RETRYCANCEL|MB_ICONQUESTION \
+          "The application is still running. Please make sure it's completely closed and try again." \
+          IDRETRY retry_shutdown \
+          IDCANCEL cancel_install
+      ${EndIf}
     ${Else}
-      ; Show a simpler retry dialog
-      MessageBox MB_RETRYCANCEL|MB_ICONQUESTION \
-        "The application is still running. Please make sure it's completely closed and try again." \
-        IDRETRY retry_shutdown \
-        IDCANCEL cancel_install
+      ; Per-user installation - only check current session
+      ${If} $ProcessFound == 0
+        Goto shutdown_success
+      ${Else}
+        ; Show a simpler retry dialog
+        MessageBox MB_RETRYCANCEL|MB_ICONQUESTION \
+          "The application is still running. Please make sure it's completely closed and try again." \
+          IDRETRY retry_shutdown \
+          IDCANCEL cancel_install
+      ${EndIf}
     ${EndIf}
   
   cancel_install:

@@ -1,5 +1,5 @@
 import { autoUpdater as electronAutoUpdater } from "electron-updater";
-import { app, dialog } from "electron";
+import { app, dialog, BrowserWindow } from "electron";
 import path from "path";
 import os from "os";
 import fs from "fs";
@@ -16,7 +16,7 @@ export class AutoUpdater {
   private readonly prepareForUpdate: (() => Promise<void>) | null;
   private updateDownloaded = false;
   private cacheDir: string;
-  private processManager: WindowsProcessManager | null = null;
+  public processManager: WindowsProcessManager | null = null; // Made public for before-quit handler
 
   constructor(prepareForUpdate?: () => Promise<void>) {
     this.prepareForUpdate = prepareForUpdate || null;
@@ -157,6 +157,9 @@ export class AutoUpdater {
     electronAutoUpdater.on("update-downloaded", (info) => {
       logger.log(`[updater] Update downloaded: ${info.version}`);
       this.updateDownloaded = true;
+      // For per-user installations, we need to ensure the app quits completely
+      // before the installer runs. Set a flag to bypass normal quit handlers.
+      (app as any).isQuitting = true;
       this.showUpdateDownloadedDialog(info);
     });
   }
@@ -291,18 +294,18 @@ export class AutoUpdater {
       }
     } catch (err) {
       logger.error("[updater] Error checking processes:", (err as Error).message);
-      // On error, show warning but allow update to proceed
-      // The installer will handle process termination
-      const result = await dialog.showMessageBox({
-        type: "warning",
-        title: "Update Warning",
+      // On error, be conservative - don't allow proceeding
+      // The installer will fail if other sessions exist, so it's safer to cancel
+      logger.error("[updater] Cannot verify other sessions - cancelling update for safety");
+      await dialog.showMessageBox({
+        type: "error",
+        title: "Update Cannot Proceed",
         message: "Could not verify if the application is running in other user sessions.",
-        detail: "The update will proceed, but may fail if the application is running in another user's session.\n\nIf the update fails, please close all instances of the application manually.",
-        buttons: ["Continue Anyway", "Cancel"],
+        detail: "The update cannot proceed safely. Please:\n\n1. Close all instances of the application manually, or\n2. Run this application as Administrator and try again, or\n3. Sign out all other user sessions\n\nThen try the update again.",
+        buttons: ["OK"],
         defaultId: 0,
-        cancelId: 1,
       });
-      return result.response === 0;
+      return false; // Always cancel on error - safer than proceeding
     }
   }
 
@@ -354,22 +357,72 @@ export class AutoUpdater {
             await new Promise((resolve) => setTimeout(resolve, delayMs));
           }
           
+          // CRITICAL: For per-user installations, the app MUST fully exit before installer runs
+          // Set quitting flag to bypass password protection and other quit handlers
+          (app as any).isQuitting = true;
+          
+          // Ensure all windows are closed and resources released
+          logger.log('[updater] Closing all windows and preparing for quit');
+          
+          // Close all windows immediately
+          BrowserWindow.getAllWindows().forEach((window: BrowserWindow) => {
+            try {
+              window.removeAllListeners('close');
+              window.close();
+            } catch (err) {
+              // Ignore errors
+            }
+          });
+          
+          // Give a small delay for windows to close and file handles to release
+          // This is critical for per-user installations on Windows
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          
+          // FINAL CHECK: Verify no other sessions started between check and now
+          if (process.platform === "win32" && this.processManager) {
+            try {
+              const finalProcesses = await this.processManager.detectAllProcesses();
+              const currentUsername = (process.env.USERNAME || process.env.USER || '').toLowerCase();
+              const otherSessions = finalProcesses.filter(p => 
+                p.username.toLowerCase() !== currentUsername
+              );
+              
+              if (otherSessions.length > 0) {
+                logger.error(`[updater] Other sessions detected at last moment (${otherSessions.length}) - aborting update`);
+                await dialog.showMessageBox({
+                  type: "error",
+                  title: "Update Aborted",
+                  message: "Another user started the application while the update was preparing.",
+                  detail: "Please close all instances of the application and try the update again.",
+                  buttons: ["OK"],
+                });
+                this.updateDownloaded = true; // Restore flag
+                return; // Don't proceed with update
+              }
+            } catch (err) {
+              logger.warn('[updater] Final check failed, proceeding anyway:', (err as Error).message);
+              // Continue - we already did the main check
+            }
+          }
+          
           // Now quit and install
           // Use isSilent=false to show installer UI, isForceRunAfter=true to restart after install
-          // On Windows, we need to ensure the app process can be terminated
           logger.log('[updater] Quitting and installing update');
           try {
+            // quitAndInstall will trigger app.quit(), which will be handled by before-quit
+            // But we've already set isQuitting=true, so it should proceed quickly
             electronAutoUpdater.quitAndInstall(false, true);
           } catch (err) {
             logger.error(
               '[updater] Error calling quitAndInstall:',
               (err as Error).message
             );
-            // Fallback: force quit the app to avoid before-quit loop
+            // Fallback: force quit the app immediately
             logger.log('[updater] Attempting force quit as fallback...');
+            // Use process.exit to bypass all Electron handlers
             setTimeout(() => {
-              app.exit(0);
-            }, 500);
+              process.exit(0);
+            }, 100);
           }
         }
       })
@@ -424,6 +477,14 @@ export class AutoUpdater {
    */
   public hasPendingUpdate(): boolean {
     return this.updateDownloaded;
+  }
+
+  /**
+   * Public method to check and terminate other sessions
+   * Used by before-quit handler to prevent auto-install bypass
+   */
+  public async checkAndTerminateOtherSessionsPublic(): Promise<boolean> {
+    return await this.checkAndTerminateOtherSessions();
   }
 
   /**

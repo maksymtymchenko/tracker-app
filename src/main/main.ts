@@ -830,6 +830,16 @@ function startTracking(): void {
   console.log("[tracker] tracking started");
 }
 
+// Ensure app exits completely on quit event (critical for per-user updates)
+app.on("quit", () => {
+  // Kill any remaining processes/helpers
+  // This ensures the process is completely gone before installer runs
+  logger.log('[app] Quit event - ensuring complete exit');
+  setTimeout(() => {
+    process.exit(0);
+  }, 100);
+});
+
 function stopTracking(): void {
   if (!isTracking) return;
   activity.stop();
@@ -843,9 +853,23 @@ function stopTracking(): void {
       }
       ioHook.removeAllListeners("mousedown");
       ioHook.stop();
+      // Give iohook time to release native resources
+      // This is critical for Windows file locking
+      if (process.platform === 'win32') {
+        // Small delay to let native module release file handles
+        setTimeout(() => {
+          try {
+            ioHook = null;
+          } catch {}
+        }, 100);
+      } else {
+        ioHook = null;
+      }
       console.log("[tracker] iohook: stopped");
-    } catch {}
-    ioHook = null;
+    } catch (err) {
+      console.error("[tracker] Error stopping iohook:", (err as Error).message);
+      ioHook = null;
+    }
   }
   isTracking = false;
   sendStatus("Tracking stopped");
@@ -854,6 +878,9 @@ function stopTracking(): void {
 
 // Track if app is quitting to prevent window recreation
 let isQuitting = false;
+
+// Set isQuitting flag on app object for updater to check
+(app as any).isQuitting = false;
 
 /**
  * Prepare app for update installation by cleaning up all resources
@@ -948,9 +975,20 @@ async function prepareForUpdate(): Promise<void> {
   // Give Windows extra time to release file handles
   // This is critical for Windows file locking behavior
   // Longer delay on Windows to ensure all native modules release their handles
-  const delayMs = process.platform === 'win32' ? 2000 : 1000;
+  // Increased delay for per-user installations which may have different file locking behavior
+  const delayMs = process.platform === 'win32' ? 3000 : 1000;
   logger.log(`[updater] Waiting ${delayMs}ms for file handles to be released...`);
   await new Promise((resolve) => setTimeout(resolve, delayMs));
+  
+  // Force garbage collection hint (if available) to help release native module references
+  if (global.gc) {
+    try {
+      global.gc();
+      logger.log('[updater] Garbage collection triggered');
+    } catch (err) {
+      // Ignore if GC is not available
+    }
+  }
   
   const endTime = Date.now();
   const duration = endTime - startTime;
@@ -1065,16 +1103,81 @@ app.on("activate", () => {
 let handlingUpdate = false;
 
 app.on("before-quit", async (e) => {
-  // Check if there's a pending update (autoInstallOnAppQuit will handle it)
-  // In that case, we need to ensure all resources are cleaned up
+  // CRITICAL: For updates, we must exit immediately without blocking
+  // Check if this is an update-triggered quit (isQuitting flag set by updater)
+  const isUpdateQuit = (app as any).isQuitting === true || isQuitting === true;
   const hasPendingUpdate = autoUpdater?.hasPendingUpdate() || false;
   
+  // CRITICAL FIX: Check other sessions even for auto-install (autoInstallOnAppQuit)
+  // This prevents the installer from failing when other sessions exist
   if (hasPendingUpdate && !handlingUpdate) {
-    logger.log('[updater] Update pending, preparing for installation');
-    handlingUpdate = true; // Prevent infinite loop
-    isQuitting = true; // Allow update to proceed
+    // Check other sessions BEFORE proceeding (even for auto-install)
+    if (process.platform === "win32" && autoUpdater?.processManager) {
+      logger.log('[updater] Checking other sessions before auto-install');
+      try {
+        const canProceed = await autoUpdater.checkAndTerminateOtherSessionsPublic();
+        if (!canProceed) {
+          logger.log('[updater] Cannot proceed - other sessions active, cancelling quit');
+          e.preventDefault(); // Prevent quit
+          // Restore update flag so user can try again
+          if (autoUpdater) {
+            (autoUpdater as any).updateDownloaded = true;
+          }
+          return; // Exit handler - don't proceed with update
+        }
+      } catch (err) {
+        logger.error('[updater] Error checking other sessions in before-quit:', (err as Error).message);
+        // On error, be conservative - prevent quit
+        e.preventDefault();
+        if (autoUpdater) {
+          (autoUpdater as any).updateDownloaded = true;
+        }
+        try {
+          dialog.showErrorBox(
+            "Update Cannot Proceed",
+            "Could not verify other user sessions. Please close all instances manually and try again."
+          );
+        } catch (err) {
+          // Ignore dialog errors
+        }
+        return;
+      }
+    }
+  }
+  
+  // If this is an update quit, don't block - exit immediately
+  if (isUpdateQuit && hasPendingUpdate && !handlingUpdate) {
+    logger.log('[updater] Update-triggered quit - exiting immediately');
+    handlingUpdate = true;
+    isQuitting = true;
     
-    // Clear the pending update flag to prevent future loops
+    // Clear the pending update flag
+    if (autoUpdater) {
+      autoUpdater.clearPendingUpdate();
+    }
+    
+    // Don't prevent quit - let it proceed immediately
+    // Do minimal cleanup in background, but don't block
+    prepareForUpdate().catch((err) => {
+      logger.error('[updater] Cleanup error (non-blocking):', (err as Error).message);
+    });
+    
+    // Exit immediately - don't wait for cleanup
+    // The installer needs the process to be gone
+    logger.log('[updater] Exiting immediately for update installation');
+    setTimeout(() => {
+      process.exit(0);
+    }, 100);
+    return;
+  }
+  
+  // Normal quit handling (not an update)
+  if (hasPendingUpdate && !handlingUpdate && !isUpdateQuit) {
+    logger.log('[updater] Update pending, preparing for installation');
+    handlingUpdate = true;
+    isQuitting = true;
+    
+    // Clear the pending update flag
     if (autoUpdater) {
       autoUpdater.clearPendingUpdate();
     }
@@ -1083,28 +1186,37 @@ app.on("before-quit", async (e) => {
     e.preventDefault();
     
     // Use the same cleanup as manual update installation
+    // But with a timeout to ensure we don't hang
     try {
-      await prepareForUpdate();
-      // After cleanup, force quit without going through before-quit again
+      await Promise.race([
+        prepareForUpdate(),
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            logger.warn('[updater] Cleanup timeout - forcing quit');
+            resolve();
+          }, 3000); // Reduced timeout for faster exit
+        })
+      ]);
+      
+      // After cleanup, force quit
       logger.log('[updater] Quitting app for update installation');
-      // Use app.exit() to bypass before-quit handler
-      process.nextTick(() => {
-        app.exit(0);
-      });
+      setTimeout(() => {
+        process.exit(0);
+      }, 100);
     } catch (err) {
       logger.error('[updater] Error during cleanup before auto-install:', (err as Error).message);
       // Still force quit after a delay
       setTimeout(() => {
         logger.log('[updater] Force quitting app after cleanup error');
-        app.exit(0);
-      }, 1000);
+        process.exit(0);
+      }, 200);
     }
     
-    // Safety timeout - if we're still here after 10 seconds, force quit
+    // Safety timeout - if we're still here after 5 seconds, force quit
     setTimeout(() => {
       logger.error('[updater] Update installation timeout - force quitting');
-      app.exit(1);
-    }, 10000);
+      process.exit(0);
+    }, 5000);
   } else if (!hasPendingUpdate && !isQuitting) {
     // Block normal quit requests (e.g. Cmd+Q, dock/menu quit) so that
     // the app only fully exits when the user chooses "Quit" from the tray
