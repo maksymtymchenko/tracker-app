@@ -2,6 +2,7 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { autoUpdater as electronAutoUpdater } from "electron-updater";
 import { ensureConfigFile, updateConfig, ensureConfigDir } from "./config";
 import { registerIpcHandlers, removeAllIpcHandlers } from "./ipc";
 import { TrayController } from "./tray";
@@ -17,9 +18,9 @@ import { AutoUpdater } from "./autoUpdater";
 import { setAutoUpdaterInstance } from "./ipc";
 
 let mainWindow: BrowserWindow | null = null;
-let isTracking = false;
 const deviceId = uuidv4();
 let passwordDialog: BrowserWindow | null = null;
+let isTracking = false;
 
 interface QuitPasswordResult {
   isCorrect: boolean;
@@ -307,13 +308,9 @@ async function attemptQuit(): Promise<void> {
  */
 function performQuit(): void {
   isQuitting = true;
+  (app as any).isQuitting = true;
   stopTracking();
-  // Properly destroy window before quitting
-  if (mainWindow) {
-    mainWindow.removeAllListeners("close");
-    mainWindow.destroy();
-    mainWindow = null;
-  }
+  // Allow Electron to run its normal shutdown path
   app.quit();
 }
 
@@ -386,7 +383,7 @@ async function createWindow(): Promise<void> {
       // Prevent window from closing and hide it instead so the app
       // keeps running in the background (system tray)
       e.preventDefault();
-        mainWindow?.hide();
+      mainWindow?.hide();
     } else {
       // When actually quitting (including during updates), allow window to close immediately
       // Log the shutdown for diagnostics
@@ -518,6 +515,17 @@ let flushTimer: NodeJS.Timeout | null = null;
 let ioHook: any | null = null;
 let trayController: TrayController | null = null;
 let autoUpdater: AutoUpdater | null = null;
+let isQuitting = false;
+
+// Set isQuitting flag on app object for updater to check
+(app as any).isQuitting = false;
+
+// electron-updater doesn't type this event even though Electron emits it
+(electronAutoUpdater as any).on("before-quit-for-update", () => {
+  logger.log("[updater] before-quit-for-update received, allowing app to exit");
+  isQuitting = true;
+  (app as any).isQuitting = true;
+});
 
 function setupTracking(username: string): void {
   const config = ensureConfigFile();
@@ -877,11 +885,6 @@ function stopTracking(): void {
 }
 
 // Track if app is quitting to prevent window recreation
-let isQuitting = false;
-
-// Set isQuitting flag on app object for updater to check
-(app as any).isQuitting = false;
-
 /**
  * Prepare app for update installation by cleaning up all resources
  * This function is called before update installation to ensure clean shutdown
