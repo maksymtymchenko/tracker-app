@@ -1,8 +1,13 @@
 async function init() {
-  const statusEl = document.getElementById('status')!;
-  const userEl = document.getElementById('user')!;
-  const versionEl = document.getElementById('version')!;
+  const statusEl = document.getElementById('status') as HTMLDivElement;
+  const userEl = document.getElementById('user') as HTMLDivElement;
+  const versionEl = document.getElementById('version') as HTMLSpanElement;
   const statusBadge = document.getElementById('statusBadge') as HTMLSpanElement;
+
+  // Ensure version text is bold even if template changes
+  if (versionEl) {
+    versionEl.style.fontWeight = '700';
+  }
 
   try {
     const username = await window.tracker.getUsername();
@@ -40,5 +45,4 @@ async function init() {
 }
 
 init();
-
 
