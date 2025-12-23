@@ -1106,31 +1106,49 @@ app.on("activate", () => {
 let handlingUpdate = false;
 
 app.on("before-quit", async (e) => {
-  // CRITICAL: For updates, we must exit immediately without blocking
-  // Check if this is an update-triggered quit (isQuitting flag set by updater)
-  const isUpdateQuit = (app as any).isQuitting === true || isQuitting === true;
+  const wasQuitting =
+    (app as any).isQuitting === true || isQuitting === true;
+  const restoreQuitFlags = () => {
+    if (!wasQuitting) {
+      isQuitting = false;
+      (app as any).isQuitting = false;
+    }
+  };
+
+  if (!wasQuitting) {
+    isQuitting = true;
+    (app as any).isQuitting = true;
+  }
+
   const hasPendingUpdate = autoUpdater?.hasPendingUpdate() || false;
-  
-  // CRITICAL FIX: Check other sessions even for auto-install (autoInstallOnAppQuit)
-  // This prevents the installer from failing when other sessions exist
+
+  // CRITICAL: For updates, we must exit immediately without blocking
+  // Check if this is an update-triggered quit (flag was set before this handler)
+  const isUpdateQuit = wasQuitting && hasPendingUpdate;
+
+  // Check other user sessions before any update-triggered shutdown
   if (hasPendingUpdate && !handlingUpdate) {
-    // Check other sessions BEFORE proceeding (even for auto-install)
     if (process.platform === "win32" && autoUpdater?.processManager) {
-      logger.log('[updater] Checking other sessions before auto-install');
+      logger.log("[updater] Checking other sessions before auto-install");
       try {
-        const canProceed = await autoUpdater.checkAndTerminateOtherSessionsPublic();
+        const canProceed =
+          await autoUpdater.checkAndTerminateOtherSessionsPublic();
         if (!canProceed) {
-          logger.log('[updater] Cannot proceed - other sessions active, cancelling quit');
-          e.preventDefault(); // Prevent quit
-          // Restore update flag so user can try again
+          logger.log(
+            "[updater] Cannot proceed - other sessions active, cancelling quit"
+          );
+          e.preventDefault();
           if (autoUpdater) {
             (autoUpdater as any).updateDownloaded = true;
           }
-          return; // Exit handler - don't proceed with update
+          restoreQuitFlags();
+          return;
         }
       } catch (err) {
-        logger.error('[updater] Error checking other sessions in before-quit:', (err as Error).message);
-        // On error, be conservative - prevent quit
+        logger.error(
+          "[updater] Error checking other sessions in before-quit:",
+          (err as Error).message
+        );
         e.preventDefault();
         if (autoUpdater) {
           (autoUpdater as any).updateDownloaded = true;
@@ -1140,95 +1158,87 @@ app.on("before-quit", async (e) => {
             "Update Cannot Proceed",
             "Could not verify other user sessions. Please close all instances manually and try again."
           );
-        } catch (err) {
-          // Ignore dialog errors
+        } catch {
+          // ignore
         }
+        restoreQuitFlags();
         return;
       }
     }
   }
-  
-  // If this is an update quit, don't block - exit immediately
-  if (isUpdateQuit && hasPendingUpdate && !handlingUpdate) {
-    logger.log('[updater] Update-triggered quit - exiting immediately');
+
+  if (isUpdateQuit && !handlingUpdate) {
+    logger.log("[updater] Update-triggered quit - exiting immediately");
     handlingUpdate = true;
-    isQuitting = true;
-    
-    // Clear the pending update flag
+
     if (autoUpdater) {
       autoUpdater.clearPendingUpdate();
     }
-    
-    // Don't prevent quit - let it proceed immediately
-    // Do minimal cleanup in background, but don't block
+
     prepareForUpdate().catch((err) => {
-      logger.error('[updater] Cleanup error (non-blocking):', (err as Error).message);
+      logger.error(
+        "[updater] Cleanup error (non-blocking):",
+        (err as Error).message
+      );
     });
-    
-    // Exit immediately - don't wait for cleanup
-    // The installer needs the process to be gone
-    logger.log('[updater] Exiting immediately for update installation');
+
+    logger.log("[updater] Exiting immediately for update installation");
     setTimeout(() => {
       process.exit(0);
     }, 100);
     return;
   }
-  
-  // Normal quit handling (not an update)
+
   if (hasPendingUpdate && !handlingUpdate && !isUpdateQuit) {
-    logger.log('[updater] Update pending, preparing for installation');
+    logger.log("[updater] Update pending, preparing for installation");
     handlingUpdate = true;
-    isQuitting = true;
-    
-    // Clear the pending update flag
+
     if (autoUpdater) {
       autoUpdater.clearPendingUpdate();
     }
-    
-    // Prevent default quit to allow cleanup first
+
     e.preventDefault();
-    
-    // Use the same cleanup as manual update installation
-    // But with a timeout to ensure we don't hang
+
     try {
       await Promise.race([
         prepareForUpdate(),
         new Promise<void>((resolve) => {
           setTimeout(() => {
-            logger.warn('[updater] Cleanup timeout - forcing quit');
+            logger.warn("[updater] Cleanup timeout - forcing quit");
             resolve();
-          }, 3000); // Reduced timeout for faster exit
-        })
+          }, 3000);
+        }),
       ]);
-      
-      // After cleanup, force quit
-      logger.log('[updater] Quitting app for update installation');
+
+      logger.log("[updater] Quitting app for update installation");
       setTimeout(() => {
         process.exit(0);
       }, 100);
     } catch (err) {
-      logger.error('[updater] Error during cleanup before auto-install:', (err as Error).message);
-      // Still force quit after a delay
+      logger.error(
+        "[updater] Error during cleanup before auto-install:",
+        (err as Error).message
+      );
       setTimeout(() => {
-        logger.log('[updater] Force quitting app after cleanup error');
+        logger.log("[updater] Force quitting app after cleanup error");
         process.exit(0);
       }, 200);
     }
-    
-    // Safety timeout - if we're still here after 5 seconds, force quit
+
     setTimeout(() => {
-      logger.error('[updater] Update installation timeout - force quitting');
+      logger.error("[updater] Update installation timeout - force quitting");
       process.exit(0);
     }, 5000);
-  } else if (!hasPendingUpdate && !isQuitting) {
-    // Block normal quit requests (e.g. Cmd+Q, dock/menu quit) so that
-    // the app only fully exits when the user chooses "Quit" from the tray
-    // menu and successfully enters the password there.
+    return;
+  }
+
+  if (!hasPendingUpdate && !wasQuitting) {
     e.preventDefault();
-    // Optionally hide the main window on quit attempts
     if (mainWindow) {
       mainWindow.hide();
     }
+    restoreQuitFlags();
+    return;
   }
-  // If handlingUpdate is true or isQuitting is true, let the quit proceed normally
+  // otherwise let quit continue
 });
