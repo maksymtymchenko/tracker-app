@@ -37,8 +37,7 @@
             "**/node_modules/screenshot-desktop/**/*"
         ],
         "win": {
-            "target": [
-                {
+            "target": [{
                     "target": "nsis",
                     "arch": [
                         "x64"
@@ -57,15 +56,13 @@
             "allowToChangeInstallationDirectory": true,
             "createDesktopShortcut": true,
             "createStartMenuShortcut": true,
-            "include": "build/installer.nsh",
             "perMachine": false
         },
         "portable": {
             "artifactName": "${productName}-${version}-portable.exe"
         },
         "mac": {
-            "target": [
-                {
+            "target": [{
                     "target": "dmg",
                     "arch": [
                         "x64",
@@ -85,15 +82,13 @@
         "dmg": {
             "title": "${productName} ${version}"
         },
-        "publish": [
-            {
-                "provider": "s3",
-                "bucket": "pub-783c37b34b55408d998282fd1a2781f6",
-                "region": "auto",
-                "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-                "channel": "latest"
-            }
-        ]
+        "publish": [{
+            "provider": "s3",
+            "bucket": "pub-783c37b34b55408d998282fd1a2781f6",
+            "region": "auto",
+            "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+            "channel": "latest"
+        }]
     },
     "keywords": [
         "electron",
