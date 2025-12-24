@@ -3,6 +3,13 @@ import { spawnSync } from "child_process";
 import si from "systeminformation";
 import { BaseEvent, WindowActivityData } from "../types/events";
 
+export interface ActiveWindowInfo {
+  application: string;
+  title: string;
+  path?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
 export interface ActivityTrackerOptions {
   username: string;
   deviceId: string;
@@ -10,15 +17,11 @@ export interface ActivityTrackerOptions {
   intervalMs: number;
   minActivityDuration: number;
   maxIdleTime: number;
+  onActiveWindow?: (info: ActiveWindowInfo) => void;
+  onWindowChange?: (info: ActiveWindowInfo) => void;
 }
 
 export type ActivityHandler = (event: BaseEvent) => void;
-
-interface ActiveWindowInfo {
-  application: string;
-  title: string;
-  path?: string;
-}
 
 export class ActivityTracker {
   private timer: NodeJS.Timeout | null = null;
@@ -58,6 +61,7 @@ export class ActivityTracker {
           setTimeout(() => resolve({ application: "", title: "" }), timeoutMs);
         }),
       ]);
+      this.opts.onActiveWindow?.(active);
       const isIdle = now - this.lastActivityAt > this.opts.maxIdleTime;
 
       if (!this.lastWindow) {
@@ -109,6 +113,7 @@ export class ActivityTracker {
           this.lastTimestamp = now;
           this.idleActive = false;
           this.lastActivityAt = now;
+          this.opts.onWindowChange?.(active);
         } else if (isIdle) {
           // Idle state changed - keep same window, reset timestamp
           this.lastTimestamp = now;
@@ -178,7 +183,16 @@ export class ActivityTracker {
             const appName = info.owner.name || "Unknown";
             const title = info.title || "";
             console.log(`[tracker] active-win success: ${appName} - ${title}`);
-            return { application: appName, title: title };
+            const bounds = info.bounds
+              ? {
+                  x: info.bounds.x,
+                  y: info.bounds.y,
+                  width: info.bounds.width,
+                  height: info.bounds.height,
+                }
+              : undefined;
+            const path = info.owner.path || undefined;
+            return { application: appName, title: title, bounds, path };
           }
           console.log(`[tracker] active-win returned no owner info`);
           return null;

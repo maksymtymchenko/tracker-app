@@ -212,7 +212,7 @@ export class Screenshotter {
     }
   }
 
-  async capture(reason: string): Promise<void> {
+  async capture(reason: string, screenIndex?: number): Promise<void> {
     // Check if system is sleeping first
     if (this.isSystemAsleep()) {
       logger.log(`[tracker] Screenshot skipped: system is sleeping (reason: ${reason})`);
@@ -259,7 +259,9 @@ export class Screenshotter {
       // On macOS, try to specify screen index 0 (main display) to avoid capturing all screens combined
       // If screen option is not supported or fails, it will fall back to default behavior
       const screenshotOptions: { format: string; screen?: number } = { format: 'png' };
-      if (process.platform === 'darwin') {
+      if (typeof screenIndex === 'number') {
+        screenshotOptions.screen = screenIndex;
+      } else if (process.platform === 'darwin') {
         // Try screen 0 (main display) first - this helps avoid capturing wrong screen
         screenshotOptions.screen = 0;
       }
@@ -377,5 +379,4 @@ export class Screenshotter {
     this.onShot(event, dataUrl);
   }
 }
-
 

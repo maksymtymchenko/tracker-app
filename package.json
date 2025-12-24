@@ -1,6 +1,6 @@
 {
     "name": "windows-activity-tracker",
-    "version": "0.1.21",
+    "version": "0.1.22",
     "private": true,
     "description": "Cross-platform (Windows/macOS/Linux) desktop activity tracker built with Electron and TypeScript",
     "main": "dist/main/main.js",
@@ -54,7 +54,7 @@
         "nsis": {
             "oneClick": false,
             "allowToChangeInstallationDirectory": true,
-            "createDesktopShortcut": true,
+            "createDesktopShortcut": false,
             "createStartMenuShortcut": true,
             "perMachine": false
         },

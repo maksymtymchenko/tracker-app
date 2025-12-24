@@ -10,6 +10,7 @@ import { EventBuffer } from "./buffer";
 import { ActivityTracker } from "./activityTracker";
 import { ClipboardMonitor } from "./clipboardMonitor";
 import { Screenshotter } from "./screenshotter";
+import { ScreenshotScheduler } from "./screenshotScheduler";
 import { ApiClient } from "./api";
 import { BaseEvent } from "../types/events";
 import { v4 as uuidv4 } from "uuid";
@@ -450,8 +451,8 @@ async function createWindow(): Promise<void> {
       onCapture: () => {
         logger.log("[tracker] Manual screenshot requested from tray menu");
         logger.log(`[tracker] Log file location: ${logger.getLogPath()}`);
-        if (screenshotter) {
-          screenshotter.capture("manual").catch((err) => {
+        if (screenshotScheduler) {
+          screenshotScheduler.requestCapture("manual").catch((err) => {
             logger.error(
               "[tracker] Manual screenshot capture failed:",
               (err as Error).message
@@ -465,7 +466,7 @@ async function createWindow(): Promise<void> {
           });
         } else {
           logger.error(
-            "[tracker] ERROR: screenshotter is null! Screenshots may not be enabled in config."
+            "[tracker] ERROR: screenshot scheduler is not initialized! Screenshots may not be enabled in config."
           );
         }
       },
@@ -510,9 +511,9 @@ let buffer: EventBuffer;
 let activity: ActivityTracker;
 let clipboardMon: ClipboardMonitor | null = null;
 let screenshotter: Screenshotter | null = null;
+let screenshotScheduler: ScreenshotScheduler | null = null;
 let apiClient: ApiClient;
 let flushTimer: NodeJS.Timeout | null = null;
-let ioHook: any | null = null;
 let trayController: TrayController | null = null;
 let autoUpdater: AutoUpdater | null = null;
 let isQuitting = false;
@@ -680,6 +681,19 @@ function setupTracking(username: string): void {
           });
       }
     );
+    screenshotScheduler = new ScreenshotScheduler({
+      screenshotter,
+      minIntervalMs: config.minScreenshotInterval,
+      timeBasedIntervalMs: config.screenshotIntervalMinutes * 60 * 1000,
+      windowChangeDebounceMs: config.windowChangeScreenshotDebounceMs,
+      maxScreenshotsPerHour: config.maxScreenshotsPerHour,
+      resumeCaptureOnActive: config.screenshotOnIdleResume,
+      idleThresholdMs: config.maxIdleTime,
+      screenshotTarget: config.screenshotTarget,
+    });
+  } else {
+    screenshotter = null;
+    screenshotScheduler = null;
   }
 
   // Create activity tracker AFTER screenshotter so it can reference it
@@ -691,24 +705,18 @@ function setupTracking(username: string): void {
       intervalMs: config.trackingInterval,
       minActivityDuration: config.minActivityDuration,
       maxIdleTime: config.maxIdleTime,
+      onActiveWindow: (info) => {
+        screenshotScheduler?.updateActiveWindow(info);
+      },
+      onWindowChange:
+        config.trackScreenshots && config.screenshotOnWindowChange
+          ? () => {
+              screenshotScheduler?.handleWindowChange();
+            }
+          : undefined,
     },
     (e) => {
       onEvent(e);
-      if (config.trackScreenshots && config.screenshotOnWindowChange) {
-        console.log("[tracker] screenshot: request on window_change");
-        if (screenshotter) {
-          screenshotter.capture("window_change").catch((err) => {
-            console.error(
-              "[tracker] screenshot capture error:",
-              (err as Error).message
-            );
-          });
-        } else {
-          console.log(
-            "[tracker] WARNING: screenshotter is null when window change detected!"
-          );
-        }
-      }
     }
   );
 
@@ -720,68 +728,12 @@ function setupTracking(username: string): void {
         domain: "windows-desktop",
         pollIntervalMs: 1500,
         maxLength: 1000,
-      },
-      onEvent
-    );
+    },
+    onEvent
+  );
   }
 
-  // Time-window based screenshot (every 10 seconds, only if clicks occurred)
-  // Screenshots are taken only if there were clicks in the 10-second window
-  if (config.trackScreenshots) {
-    try {
-      // Clean up existing interval if any
-      if (ioHook && (ioHook as any).screenshotInterval) {
-        clearInterval((ioHook as any).screenshotInterval);
-        (ioHook as any).screenshotInterval = null;
-      }
-      
-      // Lazy import to avoid native init on platforms where not desired
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      ioHook = require("iohook");
-      let clickCount = 0;
-      let windowStartTime = Date.now();
-      const SCREENSHOT_WINDOW_MS = 10000; // 10 seconds
-      
-      // Track clicks in current window
-      ioHook.on("mousedown", () => {
-        clickCount++;
-      });
-      
-      // Check every 10 seconds if we should take a screenshot
-      const screenshotInterval = setInterval(() => {
-        const now = Date.now();
-        const windowDuration = now - windowStartTime;
-        
-        // If we're past the 10-second window and had clicks, take a screenshot
-        if (windowDuration >= SCREENSHOT_WINDOW_MS && clickCount > 0) {
-          const clicksInWindow = clickCount;
-          screenshotter?.capture(`click_window_${clicksInWindow}_clicks`).catch(() => {});
-          
-          // Reset for next window
-          clickCount = 0;
-          windowStartTime = now;
-        } else if (windowDuration >= SCREENSHOT_WINDOW_MS) {
-          // No clicks in this window, just reset
-          clickCount = 0;
-          windowStartTime = now;
-        }
-      }, SCREENSHOT_WINDOW_MS);
-      
-      // Store interval reference for cleanup
-      (ioHook as any).screenshotInterval = screenshotInterval;
-      
-      ioHook.start();
-      console.log(`[tracker] iohook: click listener started (screenshot every ${SCREENSHOT_WINDOW_MS / 1000}s if clicks occurred)`);
-    } catch (e) {
-      // iohook is optional and may not be available in dev mode
-      // Only log once, not on every require attempt
-      if (!app.isPackaged) {
-        console.log("[tracker] iohook not available (optional dependency):", (e as Error).message);
-      } else {
-        console.log("[tracker] iohook not available:", (e as Error).message);
-      }
-    }
-  }
+  screenshotScheduler?.start();
 
   if (flushTimer) clearInterval(flushTimer);
   // Flush every 5 seconds to ensure events are sent promptly
@@ -852,33 +804,9 @@ function stopTracking(): void {
   if (!isTracking) return;
   activity.stop();
   clipboardMon?.stop();
-  if (ioHook) {
-    try {
-      // Clear screenshot interval if it exists
-      if ((ioHook as any).screenshotInterval) {
-        clearInterval((ioHook as any).screenshotInterval);
-        (ioHook as any).screenshotInterval = null;
-      }
-      ioHook.removeAllListeners("mousedown");
-      ioHook.stop();
-      // Give iohook time to release native resources
-      // This is critical for Windows file locking
-      if (process.platform === 'win32') {
-        // Small delay to let native module release file handles
-        setTimeout(() => {
-          try {
-            ioHook = null;
-          } catch {}
-        }, 100);
-      } else {
-        ioHook = null;
-      }
-      console.log("[tracker] iohook: stopped");
-    } catch (err) {
-      console.error("[tracker] Error stopping iohook:", (err as Error).message);
-      ioHook = null;
-    }
-  }
+  screenshotScheduler?.stop();
+  screenshotScheduler = null;
+  screenshotter = null;
   isTracking = false;
   sendStatus("Tracking stopped");
   console.log("[tracker] tracking stopped");
