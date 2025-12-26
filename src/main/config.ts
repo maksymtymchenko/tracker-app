@@ -9,6 +9,7 @@ export const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const DEV_URL = "http://localhost:4000";
 const PROD_URL = "https://tracker-dashboard-zw8l.onrender.com";
+const CURRENT_CONFIG_VERSION = 1;
 
 /**
  * Ensure the config directory exists with proper error handling
@@ -58,6 +59,7 @@ function getDefaultServerUrl(): string {
 }
 
 export const AppConfigSchema = z.object({
+  configVersion: z.number().int().nonnegative().default(CURRENT_CONFIG_VERSION),
   username: z.string().min(1),
   serverUrl: z.string().url().or(z.literal("")),
   trackingInterval: z.number().int().positive().default(10000),
@@ -83,6 +85,7 @@ export type AppConfig = z.infer<typeof AppConfigSchema>;
 
 function getDefaultConfig(): AppConfig {
   return {
+    configVersion: CURRENT_CONFIG_VERSION,
     username: os.hostname() || os.userInfo().username || "user",
     serverUrl: getDefaultServerUrl(),
     trackingInterval: 10000,
@@ -94,7 +97,7 @@ function getDefaultConfig(): AppConfig {
     minScreenshotInterval: 60000,
     screenshotIntervalMinutes: 4,
     windowChangeScreenshotDebounceMs: 9000,
-    maxScreenshotsPerHour: 45,
+    maxScreenshotsPerHour: 35,
     screenshotOnIdleResume: true,
     screenshotTarget: "active",
     screenshotBatchDelay: 5000,
@@ -146,6 +149,18 @@ export function ensureConfigFile(): AppConfig {
       if ('quitPassword' in parsed) {
         console.log('[config] Removed deprecated field: quitPassword (now hardcoded)');
       }
+    }
+
+    // Versioned migration: backfill defaults and rewrite on version change
+    if (result.data.configVersion !== CURRENT_CONFIG_VERSION) {
+      updated = {
+        ...getDefaultConfig(),
+        ...result.data,
+        configVersion: CURRENT_CONFIG_VERSION,
+      };
+      console.log(
+        `[config] Migrated config version ${result.data.configVersion} -> ${CURRENT_CONFIG_VERSION}`
+      );
     }
 
     // If serverUrl is localhost and we're in production, update it
