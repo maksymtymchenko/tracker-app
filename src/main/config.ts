@@ -9,7 +9,7 @@ export const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const DEV_URL = "http://localhost:4000";
 const PROD_URL = "https://tracker-dashboard-zw8l.onrender.com";
-const CURRENT_CONFIG_VERSION = 1;
+const CURRENT_CONFIG_VERSION = 2;
 
 /**
  * Ensure the config directory exists with proper error handling
@@ -68,10 +68,10 @@ export const AppConfigSchema = z.object({
   trackClipboard: z.boolean().default(true),
   trackScreenshots: z.boolean().default(true),
   screenshotOnWindowChange: z.boolean().default(true),
-  minScreenshotInterval: z.number().int().positive().default(60000),
+  minScreenshotInterval: z.number().int().positive().default(30000),
   screenshotIntervalMinutes: z.number().int().positive().default(4),
   windowChangeScreenshotDebounceMs: z.number().int().positive().default(9000),
-  maxScreenshotsPerHour: z.number().int().positive().default(45),
+  maxScreenshotsPerHour: z.number().int().positive().default(35),
   screenshotOnIdleResume: z.boolean().default(true),
   screenshotTarget: z.enum(["primary", "active", "all"]).default("active"),
   screenshotBatchDelay: z.number().int().positive().default(5000),
@@ -94,7 +94,7 @@ function getDefaultConfig(): AppConfig {
     trackClipboard: true,
     trackScreenshots: true,
     screenshotOnWindowChange: true,
-    minScreenshotInterval: 60000,
+    minScreenshotInterval: 30000,
     screenshotIntervalMinutes: 4,
     windowChangeScreenshotDebounceMs: 9000,
     maxScreenshotsPerHour: 35,

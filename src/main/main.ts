@@ -2,6 +2,8 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { autoUpdater as electronAutoUpdater } from "electron-updater";
 import { ensureConfigFile, updateConfig, ensureConfigDir } from "./config";
 import { registerIpcHandlers, removeAllIpcHandlers } from "./ipc";
@@ -22,6 +24,10 @@ let mainWindow: BrowserWindow | null = null;
 const deviceId = uuidv4();
 let passwordDialog: BrowserWindow | null = null;
 let isTracking = false;
+let sessionMonitorTimer: NodeJS.Timeout | null = null;
+let isSessionPaused = false;
+
+const execAsync = promisify(exec);
 
 interface QuitPasswordResult {
   isCorrect: boolean;
@@ -43,6 +49,111 @@ function getCurrentUsername(): string {
   } catch {
     return process.env.USER || process.env.USERNAME || "unknown";
   }
+}
+
+interface SessionInfo {
+  sessionName: string;
+  username: string;
+  state: string;
+  isCurrent: boolean;
+}
+
+function parseSessionInfo(output: string): SessionInfo[] {
+  const lines = output.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length <= 1) return [];
+  const sessions: SessionInfo[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const rawLine = lines[i];
+    if (!rawLine.trim() || rawLine.startsWith("INFO:")) continue;
+    const isCurrent = rawLine.startsWith(">");
+    const cleaned = rawLine.replace(/^>/, "").trim();
+    const parts = cleaned.split(/\s+/);
+    if (parts.length < 4) continue;
+    const sessionName = parts[0] || "";
+    const username = parts[1] || "";
+    const state = parts[3] || "";
+    sessions.push({ sessionName, username, state, isCurrent });
+  }
+  return sessions;
+}
+
+async function isCurrentSessionActive(): Promise<boolean> {
+  if (process.platform !== "win32") return true;
+  try {
+    const { stdout } = await execAsync("query session", {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    const sessions = parseSessionInfo(stdout);
+    if (sessions.length === 0) return true;
+    const currentSessionName = process.env.SESSIONNAME?.toLowerCase();
+    const currentUser = getCurrentUsername().toLowerCase();
+    let match: SessionInfo | undefined;
+    if (currentSessionName) {
+      match = sessions.find(
+        (s) => s.sessionName.toLowerCase() === currentSessionName
+      );
+    }
+    if (!match) {
+      const userMatches = sessions.filter(
+        (s) => s.username.toLowerCase() === currentUser
+      );
+      if (userMatches.length === 1) {
+        match = userMatches[0];
+      } else if (userMatches.length > 1) {
+        match = userMatches.find((s) => s.isCurrent) || userMatches[0];
+      }
+    }
+    if (!match) return true;
+    return match.state.toLowerCase() === "active";
+  } catch {
+    return true;
+  }
+}
+
+function pauseTrackingForInactiveSession(): void {
+  if (!isTracking || isSessionPaused) return;
+  activity.stop();
+  clipboardMon?.stop();
+  screenshotScheduler?.stop();
+  isSessionPaused = true;
+  sendStatus("Tracking paused (inactive session)");
+  console.log("[tracker] tracking paused: inactive session");
+}
+
+function resumeTrackingForActiveSession(): void {
+  if (!isTracking || !isSessionPaused) return;
+  activity.start();
+  clipboardMon?.start();
+  screenshotScheduler?.start();
+  isSessionPaused = false;
+  sendStatus("Tracking resumed");
+  console.log("[tracker] tracking resumed: session active");
+}
+
+function startSessionMonitor(): void {
+  if (sessionMonitorTimer) return;
+  const check = () => {
+    isCurrentSessionActive()
+      .then((active) => {
+        if (!active) {
+          pauseTrackingForInactiveSession();
+        } else {
+          resumeTrackingForActiveSession();
+        }
+      })
+      .catch(() => {});
+  };
+  sessionMonitorTimer = setInterval(check, 5000);
+  check();
+}
+
+function stopSessionMonitor(): void {
+  if (sessionMonitorTimer) {
+    clearInterval(sessionMonitorTimer);
+    sessionMonitorTimer = null;
+  }
+  isSessionPaused = false;
 }
 
 function getEffectiveServerUrl(serverUrlFromConfig: string): string {
@@ -786,6 +897,7 @@ function startTracking(): void {
   activity.start();
   clipboardMon?.start();
   isTracking = true;
+  startSessionMonitor();
   sendStatus("Tracking started");
   console.log("[tracker] tracking started");
 }
@@ -808,6 +920,7 @@ function stopTracking(): void {
   screenshotScheduler = null;
   screenshotter = null;
   isTracking = false;
+  stopSessionMonitor();
   sendStatus("Tracking stopped");
   console.log("[tracker] tracking stopped");
 }
