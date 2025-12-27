@@ -1,6 +1,8 @@
 import os from "os";
+import path from "path";
 import { spawnSync } from "child_process";
 import si from "systeminformation";
+import { powerMonitor } from "electron";
 import { BaseEvent, WindowActivityData } from "../types/events";
 
 export interface ActiveWindowInfo {
@@ -29,6 +31,7 @@ export class ActivityTracker {
   private lastTimestamp = Date.now();
   private lastActivityAt = Date.now();
   private idleActive = false;
+  private appNameCache = new Map<string, string>();
   // Maximum duration before forcing a periodic record (5 minutes)
   private readonly maxSessionDuration = 5 * 60 * 1000;
 
@@ -62,12 +65,25 @@ export class ActivityTracker {
         }),
       ]);
       this.opts.onActiveWindow?.(active);
-      const isIdle = now - this.lastActivityAt > this.opts.maxIdleTime;
+      const isIdle = this.isSystemIdle(now);
 
       if (!this.lastWindow) {
         this.lastWindow = active;
         this.lastTimestamp = now;
         this.lastActivityAt = now;
+        this.idleActive = isIdle;
+        return;
+      }
+
+      if (this.idleActive && !isIdle) {
+        // Resume after idle: reset timers to avoid counting idle time as activity
+        this.idleActive = false;
+        this.lastTimestamp = now;
+        this.lastActivityAt = now;
+        if (!this.equals(active, this.lastWindow)) {
+          this.lastWindow = active;
+          this.opts.onWindowChange?.(active);
+        }
         return;
       }
 
@@ -77,7 +93,7 @@ export class ActivityTracker {
       const shouldRecord =
         windowChanged ||
         (isIdle && !this.idleActive) ||
-        duration >= this.maxSessionDuration;
+        (!isIdle && duration >= this.maxSessionDuration);
 
       if (shouldRecord) {
         if (duration >= this.opts.minActivityDuration && this.lastWindow) {
@@ -111,19 +127,19 @@ export class ActivityTracker {
           // Window changed - update to new window
           this.lastWindow = active;
           this.lastTimestamp = now;
-          this.idleActive = false;
-          this.lastActivityAt = now;
+          this.idleActive = isIdle;
+          if (!isIdle) {
+            this.lastActivityAt = now;
+          }
           this.opts.onWindowChange?.(active);
         } else if (isIdle) {
           // Idle state changed - keep same window, reset timestamp
           this.lastTimestamp = now;
           this.idleActive = true;
-          this.lastActivityAt = now;
         } else if (duration >= this.maxSessionDuration) {
           // Periodic recording - window hasn't changed, so keep the same window but reset timestamp
           // This ensures long sessions are recorded in chunks
           this.lastTimestamp = now;
-          this.lastActivityAt = now;
         }
       }
 
@@ -136,6 +152,56 @@ export class ActivityTracker {
 
   private equals(a: ActiveWindowInfo, b: ActiveWindowInfo): boolean {
     return a.application === b.application && a.title === b.title;
+  }
+
+  private normalizeAppName(name: string): string {
+    return name.replace(/\.exe$/i, "").trim();
+  }
+
+  private resolveWindowsAppName(name: string, execPath?: string): string {
+    const normalized = this.normalizeAppName(name);
+    if (process.platform !== "win32" || !execPath) {
+      return normalized;
+    }
+    const cached = this.appNameCache.get(execPath);
+    if (cached) return cached;
+    const friendly = this.getWindowsProductName(execPath);
+    const resolved = friendly || normalized;
+    this.appNameCache.set(execPath, resolved);
+    return resolved;
+  }
+
+  private getWindowsProductName(execPath: string): string | null {
+    try {
+      const safePath = execPath.replace(/'/g, "''");
+      const cmd =
+        `$p = Get-Item -LiteralPath '${safePath}'; ` +
+        `$n = $p.VersionInfo.ProductName; ` +
+        `if (-not $n) { $n = $p.VersionInfo.FileDescription }; ` +
+        `if (-not $n) { $n = $p.BaseName }; ` +
+        `Write-Output $n`;
+      const res = spawnSync("powershell", ["-NoProfile", "-Command", cmd], {
+        timeout: 1500,
+        maxBuffer: 1024 * 1024,
+      });
+      if (res.error) return null;
+      const out = res.stdout?.toString()?.trim() || "";
+      return out || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isSystemIdle(now: number): boolean {
+    try {
+      const idleSeconds = powerMonitor.getSystemIdleTime();
+      if (Number.isFinite(idleSeconds)) {
+        return idleSeconds * 1000 >= this.opts.maxIdleTime;
+      }
+    } catch {
+      // Fall back to internal tracking
+    }
+    return now - this.lastActivityAt > this.opts.maxIdleTime;
   }
 
   private async getActiveWindowSafe(): Promise<ActiveWindowInfo> {
@@ -180,7 +246,10 @@ export class ActivityTracker {
           const getActive = mod.default || mod;
           const info = await getActive();
           if (info && info.owner) {
-            const appName = info.owner.name || "Unknown";
+            const appName = this.resolveWindowsAppName(
+              info.owner.name || "Unknown",
+              info.owner.path || undefined
+            );
             const title = info.title || "";
             console.log(`[tracker] active-win success: ${appName} - ${title}`);
             const bounds = info.bounds
@@ -249,7 +318,10 @@ export class ActivityTracker {
       const getActive = mod.default || mod;
       const info = await getActive();
       if (info && info.owner) {
-        const appName = info.owner.name || "Unknown";
+        const appName = this.resolveWindowsAppName(
+          info.owner.name || "Unknown",
+          info.owner.path || undefined
+        );
         const title = info.title || "";
         console.log(`[tracker] active-win detected: ${appName} - ${title}`);
         return {
@@ -361,7 +433,10 @@ export class ActivityTracker {
 
       const top = userProcesses[0];
       if (top && top.name) {
-        const appName = top.name || "Unknown";
+        const appName = this.resolveWindowsAppName(
+          top.name || "Unknown",
+          top.path || undefined
+        );
         console.log(
           `[tracker] fallback detected: ${appName} (mem: ${top.mem}MB, cpu: ${
             (top as any).pcpu || top.cpu
@@ -377,10 +452,14 @@ export class ActivityTracker {
           return name && !systemProcesses.has(name);
         });
         if (firstNonSystem && firstNonSystem.name) {
-          console.log(`[tracker] fallback last resort: ${firstNonSystem.name}`);
+          const appName = this.resolveWindowsAppName(
+            firstNonSystem.name,
+            firstNonSystem.path || undefined
+          );
+          console.log(`[tracker] fallback last resort: ${appName}`);
           return {
-            application: firstNonSystem.name,
-            title: firstNonSystem.name,
+            application: appName,
+            title: appName,
           };
         }
       } catch {
