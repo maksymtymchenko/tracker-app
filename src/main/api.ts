@@ -6,6 +6,8 @@ export interface ScreenshotUploadBody {
   domain: 'windows-desktop';
   username: string;
   screenshot: string; // data:image/png;base64,...
+  sessionId?: number;
+  sessionName?: string;
 }
 
 export class ApiClient {
@@ -28,5 +30,4 @@ export class ApiClient {
     });
   }
 }
-
 

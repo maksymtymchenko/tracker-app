@@ -26,6 +26,8 @@ let passwordDialog: BrowserWindow | null = null;
 let isTracking = false;
 let sessionMonitorTimer: NodeJS.Timeout | null = null;
 let isSessionPaused = false;
+let sessionInfoCache: { sessionName?: string; sessionId?: number } | null = null;
+let sessionInfoCacheAt = 0;
 
 const execAsync = promisify(exec);
 
@@ -55,6 +57,7 @@ interface SessionInfo {
   sessionName: string;
   username: string;
   state: string;
+  sessionId: number;
   isCurrent: boolean;
 }
 
@@ -71,10 +74,68 @@ function parseSessionInfo(output: string): SessionInfo[] {
     if (parts.length < 4) continue;
     const sessionName = parts[0] || "";
     const username = parts[1] || "";
+    const sessionId = parseInt(parts[2] || "0", 10);
     const state = parts[3] || "";
-    sessions.push({ sessionName, username, state, isCurrent });
+    sessions.push({ sessionName, username, state, sessionId, isCurrent });
   }
   return sessions;
+}
+
+function resolveCurrentSessionInfo(
+  sessions: SessionInfo[]
+): { sessionName?: string; sessionId?: number } {
+  const currentSessionName = process.env.SESSIONNAME?.toLowerCase();
+  const currentUser = getCurrentUsername().toLowerCase();
+  let match: SessionInfo | undefined;
+  if (currentSessionName) {
+    match = sessions.find(
+      (s) => s.sessionName.toLowerCase() === currentSessionName
+    );
+  }
+  if (!match) {
+    const userMatches = sessions.filter(
+      (s) => s.username.toLowerCase() === currentUser
+    );
+    if (userMatches.length === 1) {
+      match = userMatches[0];
+    } else if (userMatches.length > 1) {
+      match = userMatches.find((s) => s.isCurrent) || userMatches[0];
+    }
+  }
+  return match
+    ? { sessionName: match.sessionName, sessionId: match.sessionId }
+    : {};
+}
+
+async function getCurrentSessionInfoCached(): Promise<{
+  sessionName?: string;
+  sessionId?: number;
+}> {
+  if (process.platform !== "win32") return {};
+  const now = Date.now();
+  if (sessionInfoCache && now - sessionInfoCacheAt < 5000) {
+    return sessionInfoCache;
+  }
+  try {
+    const { stdout } = await execAsync("query session", {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    const sessions = parseSessionInfo(stdout);
+    const sessionInfo = resolveCurrentSessionInfo(sessions);
+    sessionInfoCache = sessionInfo;
+    sessionInfoCacheAt = now;
+    return sessionInfo;
+  } catch {
+    return {};
+  }
+}
+
+function getSessionInfoSnapshot(): {
+  sessionName?: string;
+  sessionId?: number;
+} {
+  return sessionInfoCache || {};
 }
 
 async function isCurrentSessionActive(): Promise<boolean> {
@@ -86,24 +147,16 @@ async function isCurrentSessionActive(): Promise<boolean> {
     });
     const sessions = parseSessionInfo(stdout);
     if (sessions.length === 0) return true;
-    const currentSessionName = process.env.SESSIONNAME?.toLowerCase();
-    const currentUser = getCurrentUsername().toLowerCase();
-    let match: SessionInfo | undefined;
-    if (currentSessionName) {
-      match = sessions.find(
-        (s) => s.sessionName.toLowerCase() === currentSessionName
-      );
-    }
-    if (!match) {
-      const userMatches = sessions.filter(
-        (s) => s.username.toLowerCase() === currentUser
-      );
-      if (userMatches.length === 1) {
-        match = userMatches[0];
-      } else if (userMatches.length > 1) {
-        match = userMatches.find((s) => s.isCurrent) || userMatches[0];
-      }
-    }
+    const matchInfo = resolveCurrentSessionInfo(sessions);
+    sessionInfoCache = matchInfo;
+    sessionInfoCacheAt = Date.now();
+    const match = sessions.find(
+      (s) =>
+        (matchInfo.sessionName &&
+          s.sessionName === matchInfo.sessionName) ||
+        (typeof matchInfo.sessionId === "number" &&
+          s.sessionId === matchInfo.sessionId)
+    );
     if (!match) return true;
     return match.state.toLowerCase() === "active";
   } catch {
@@ -652,6 +705,23 @@ function setupTracking(username: string): void {
     try {
       // Override username with current logged-in user (for multi-user remote desktop)
       e.username = getCurrentUsername();
+      const sessionInfo = getSessionInfoSnapshot();
+      if (sessionInfo.sessionName) e.sessionName = sessionInfo.sessionName;
+      if (typeof sessionInfo.sessionId === "number") {
+        e.sessionId = sessionInfo.sessionId;
+      }
+      const data = e.data as any;
+      if (data?.process) {
+        if (
+          typeof data.process.sessionId !== "number" &&
+          typeof e.sessionId === "number"
+        ) {
+          data.process.sessionId = e.sessionId;
+        }
+        if (!data.process.sessionName && e.sessionName) {
+          data.process.sessionName = e.sessionName;
+        }
+      }
       // Developer log: event queued
       const appName = (e.data as any)?.application || "N/A";
       console.log(
@@ -761,6 +831,8 @@ function setupTracking(username: string): void {
             domain: "windows-desktop",
             username: currentUser,
             screenshot: base64,
+            sessionName: getSessionInfoSnapshot().sessionName,
+            sessionId: getSessionInfoSnapshot().sessionId,
           })
           .then(() => {
             try {
@@ -898,6 +970,7 @@ function startTracking(): void {
   clipboardMon?.start();
   isTracking = true;
   startSessionMonitor();
+  getCurrentSessionInfoCached().catch(() => {});
   sendStatus("Tracking started");
   console.log("[tracker] tracking started");
 }

@@ -1,15 +1,27 @@
 import os from "os";
 import path from "path";
-import { spawnSync } from "child_process";
+import { execFile, spawnSync } from "child_process";
 import si from "systeminformation";
 import { powerMonitor } from "electron";
-import { BaseEvent, WindowActivityData } from "../types/events";
+import {
+  BaseEvent,
+  LaunchTrigger,
+  ProcessContext,
+  ProcessDetectionSource,
+  ProcessOrigin,
+  WindowActivityData,
+} from "../types/events";
 
 export interface ActiveWindowInfo {
   application: string;
   title: string;
   path?: string;
   bounds?: { x: number; y: number; width: number; height: number };
+  pid?: number;
+  processName?: string;
+  parentPid?: number;
+  user?: string;
+  detectionSource?: ProcessDetectionSource;
 }
 
 export interface ActivityTrackerOptions {
@@ -32,6 +44,11 @@ export class ActivityTracker {
   private lastActivityAt = Date.now();
   private idleActive = false;
   private appNameCache = new Map<string, string>();
+  private processInfoCache = new Map<
+    number,
+    { info: Partial<ProcessContext>; at: number }
+  >();
+  private readonly processInfoTtlMs = 30 * 1000;
   // Maximum duration before forcing a periodic record (5 minutes)
   private readonly maxSessionDuration = 5 * 60 * 1000;
 
@@ -98,11 +115,18 @@ export class ActivityTracker {
       if (shouldRecord) {
         if (duration >= this.opts.minActivityDuration && this.lastWindow) {
           try {
+            const processContext = await this.buildProcessContext(
+              this.lastWindow,
+              isIdle
+            );
             const data: WindowActivityData = {
               application: this.lastWindow.application || "Unknown",
               title: this.lastWindow.title || "",
               duration,
               isIdle,
+              bounds: this.lastWindow.bounds,
+              path: this.lastWindow.path,
+              process: processContext,
             };
             const event: BaseEvent = {
               username: this.opts.username,
@@ -240,14 +264,15 @@ export class ActivityTracker {
   private async tryActiveWin(): Promise<ActiveWindowInfo | null> {
     try {
       // Add timeout to prevent hanging on import or getActive call
-      const result = await Promise.race([
+      const result = await Promise.race<ActiveWindowInfo | null>([
         (async () => {
           const mod: any = await import("active-win");
           const getActive = mod.default || mod;
           const info = await getActive();
           if (info && info.owner) {
+            const ownerName = info.owner.name || "Unknown";
             const appName = this.resolveWindowsAppName(
-              info.owner.name || "Unknown",
+              ownerName,
               info.owner.path || undefined
             );
             const title = info.title || "";
@@ -261,7 +286,16 @@ export class ActivityTracker {
                 }
               : undefined;
             const path = info.owner.path || undefined;
-            return { application: appName, title: title, bounds, path };
+            const windowInfo: ActiveWindowInfo = {
+              application: appName,
+              title: title,
+              bounds,
+              path,
+              pid: info.owner.processId || undefined,
+              processName: ownerName,
+              detectionSource: "active-win",
+            };
+            return windowInfo;
           }
           console.log(`[tracker] active-win returned no owner info`);
           return null;
@@ -301,13 +335,17 @@ export class ActivityTracker {
         maxBuffer: 1024 * 1024,
       });
       if (res.error) {
-        return { application: "", title: "" };
+        return { application: "", title: "", detectionSource: "mac-osa" };
       }
       const out = res.stdout?.toString()?.trim() || "";
       const [app, title] = out.split("\n");
-      return { application: app || "", title: title || "" };
+      return {
+        application: app || "",
+        title: title || "",
+        detectionSource: "mac-osa",
+      };
     } catch {
-      return { application: "", title: "" };
+      return { application: "", title: "", detectionSource: "mac-osa" };
     }
   }
 
@@ -327,6 +365,10 @@ export class ActivityTracker {
         return {
           application: appName,
           title: title,
+          pid: info.owner.processId || undefined,
+          processName: info.owner.name || undefined,
+          path: info.owner.path || undefined,
+          detectionSource: "active-win",
         };
       }
     } catch (err) {
@@ -352,7 +394,11 @@ export class ActivityTracker {
 
       if (!processes || !processes.list || processes.list.length === 0) {
         console.log("[tracker] No processes available, returning Unknown");
-        return { application: "Unknown", title: "" };
+        return {
+          application: "Unknown",
+          title: "",
+          detectionSource: "windows-fallback",
+        };
       }
 
       // System processes to exclude
@@ -442,7 +488,16 @@ export class ActivityTracker {
             (top as any).pcpu || top.cpu
           }%)`
         );
-        return { application: appName, title: appName };
+        return {
+          application: appName,
+          title: appName,
+          pid: top.pid || undefined,
+          processName: top.name || undefined,
+          parentPid: top.parentPid || undefined,
+          user: top.user || undefined,
+          path: top.path || undefined,
+          detectionSource: "windows-fallback",
+        };
       }
 
       // Last resort: return first non-system process
@@ -460,6 +515,12 @@ export class ActivityTracker {
           return {
             application: appName,
             title: appName,
+            pid: firstNonSystem.pid || undefined,
+            processName: firstNonSystem.name || undefined,
+            parentPid: firstNonSystem.parentPid || undefined,
+            user: firstNonSystem.user || undefined,
+            path: firstNonSystem.path || undefined,
+            detectionSource: "windows-fallback",
           };
         }
       } catch {
@@ -467,7 +528,11 @@ export class ActivityTracker {
       }
 
       console.log("[tracker] No suitable process found, returning Unknown");
-      return { application: "Unknown", title: "" };
+      return {
+        application: "Unknown",
+        title: "",
+        detectionSource: "windows-fallback",
+      };
     } catch (err) {
       console.error(
         "[tracker] Windows fallback error:",
@@ -475,7 +540,11 @@ export class ActivityTracker {
         err
       );
       // Return empty to prevent crash
-      return { application: "Unknown", title: "" };
+      return {
+        application: "Unknown",
+        title: "",
+        detectionSource: "windows-fallback",
+      };
     }
   }
 
@@ -486,9 +555,256 @@ export class ActivityTracker {
         processes.list.find((p) =>
           (p as any).pcpu ? (p as any).pcpu > 10 : p.cpu > 10
         ) || processes.list[0];
-      return { application: top?.name || "Unknown", title: top?.name || "" };
+      return {
+        application: top?.name || "Unknown",
+        title: top?.name || "",
+        pid: top?.pid || undefined,
+        processName: top?.name || undefined,
+        parentPid: top?.parentPid || undefined,
+        user: top?.user || undefined,
+        path: top?.path || undefined,
+        detectionSource: "linux-fallback",
+      };
     } catch {
-      return { application: "Unknown", title: "" };
+      return {
+        application: "Unknown",
+        title: "",
+        detectionSource: "linux-fallback",
+      };
     }
+  }
+
+  private async buildProcessContext(
+    info: ActiveWindowInfo,
+    isIdle: boolean
+  ): Promise<ProcessContext | undefined> {
+    const context: ProcessContext = {
+      pid: info.pid,
+      ppid: info.parentPid,
+      processName: info.processName,
+      executablePath: info.path,
+      user: info.user,
+      detectionSource: info.detectionSource || "unknown",
+    };
+
+    if (typeof info.pid === "number") {
+      const cached = await this.getProcessInfo(info.pid);
+      if (cached) {
+        Object.assign(context, cached);
+      }
+    }
+
+    const classification = this.classifyProcessContext(context, isIdle);
+    Object.assign(context, classification);
+
+    return context;
+  }
+
+  private async getProcessInfo(
+    pid: number
+  ): Promise<Partial<ProcessContext> | null> {
+    const now = Date.now();
+    const cached = this.processInfoCache.get(pid);
+    if (cached && now - cached.at < this.processInfoTtlMs) {
+      return cached.info;
+    }
+
+    const fromSi = await this.getProcessInfoFromSystemInformation(pid);
+    const fromWin =
+      process.platform === "win32"
+        ? await this.getProcessInfoFromWindows(pid)
+        : null;
+    const merged = { ...fromSi, ...fromWin };
+    if (Object.keys(merged).length === 0) {
+      return null;
+    }
+    this.processInfoCache.set(pid, { info: merged, at: now });
+    return merged;
+  }
+
+  private async getProcessInfoFromSystemInformation(
+    pid: number
+  ): Promise<Partial<ProcessContext> | null> {
+    try {
+      const processes = await Promise.race([
+        si.processes(),
+        new Promise<any>((resolve) => {
+          setTimeout(() => resolve(null), 1500);
+        }),
+      ]);
+      if (!processes?.list) return null;
+      const found = processes.list.find((p: any) => p.pid === pid);
+      if (!found) return null;
+      return {
+        processName: found.name || undefined,
+        ppid: found.parentPid || undefined,
+        user: found.user || undefined,
+        executablePath: found.path || undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async getProcessInfoFromWindows(
+    pid: number
+  ): Promise<Partial<ProcessContext> | null> {
+    const cmd =
+      `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; ` +
+      `if (-not $p) { exit 0 }; ` +
+      `$pp = $null; ` +
+      `if ($p.ParentProcessId) { ` +
+      `$pp = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"; ` +
+      `}; ` +
+      `$owner = $null; ` +
+      `try { $owner = $p.GetOwner() } catch {}; ` +
+      `$ownerName = ""; ` +
+      `if ($owner -and $owner.User) { ` +
+      `if ($owner.Domain) { $ownerName = "$($owner.Domain)\\$($owner.User)" } ` +
+      `else { $ownerName = "$($owner.User)" } ` +
+      `}; ` +
+      `$out = [pscustomobject]@{ ` +
+      `sessionId = $p.SessionId; ` +
+      `parentPid = $p.ParentProcessId; ` +
+      `parentName = if ($pp) { $pp.Name } else { "" }; ` +
+      `name = $p.Name; ` +
+      `path = $p.ExecutablePath; ` +
+      `user = $ownerName; ` +
+      `}; ` +
+      `$out | ConvertTo-Json -Compress`;
+
+    try {
+      const stdout = await this.execFileWithTimeout("powershell", [
+        "-NoProfile",
+        "-Command",
+        cmd,
+      ]);
+      const trimmed = stdout.trim();
+      if (!trimmed) return null;
+      const parsed = JSON.parse(trimmed) as {
+        sessionId?: number;
+        parentPid?: number;
+        parentName?: string;
+        name?: string;
+        path?: string;
+        user?: string;
+      };
+      return {
+        sessionId: parsed.sessionId,
+        ppid: parsed.parentPid,
+        parentName: parsed.parentName || undefined,
+        processName: parsed.name || undefined,
+        executablePath: parsed.path || undefined,
+        user: parsed.user || undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private execFileWithTimeout(
+    file: string,
+    args: string[]
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(
+        file,
+        args,
+        { timeout: 1000, maxBuffer: 1024 * 1024 },
+        (err, stdout) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(stdout?.toString() || "");
+        }
+      );
+    });
+  }
+
+  private classifyProcessContext(
+    context: ProcessContext,
+    isIdle: boolean
+  ): Pick<
+    ProcessContext,
+    "origin" | "launchTrigger" | "isSecurityProcess" | "originReason"
+  > {
+    const securityProcesses = new Set([
+      "msmpeng.exe",
+      "mssense.exe",
+      "securityhealthservice.exe",
+      "smartscreen.exe",
+      "nissrv.exe",
+    ]);
+    const serviceParents = new Set(["services.exe", "svchost.exe"]);
+    const scheduledTaskParents = new Set([
+      "taskeng.exe",
+      "taskhost.exe",
+      "taskhostw.exe",
+      "taskschd.exe",
+    ]);
+    const systemUsers = new Set([
+      "system",
+      "nt authority\\system",
+      "local service",
+      "nt authority\\local service",
+      "network service",
+      "nt authority\\network service",
+    ]);
+
+    const processName = (context.processName || "").toLowerCase();
+    const pathName = context.executablePath
+      ? path.basename(context.executablePath).toLowerCase()
+      : "";
+    const parentName = (context.parentName || "").toLowerCase();
+    const user = (context.user || "").toLowerCase();
+    const nameKey = pathName || processName;
+
+    const isSecurityProcess = nameKey
+      ? securityProcesses.has(nameKey)
+      : false;
+
+    let origin: ProcessOrigin = "user";
+    let launchTrigger: LaunchTrigger = "unknown";
+    let originReason = "no rule matched";
+
+    if (isSecurityProcess) {
+      origin = "security";
+      launchTrigger = "service";
+      originReason = "known security process";
+    } else if (typeof context.sessionId === "number" && context.sessionId === 0) {
+      origin = "system";
+      launchTrigger = "service";
+      originReason = "session 0 service";
+    } else if (user && systemUsers.has(user)) {
+      origin = "system";
+      launchTrigger = "service";
+      originReason = "service account";
+    } else if (parentName && scheduledTaskParents.has(parentName)) {
+      origin = "background";
+      launchTrigger = "scheduled_task";
+      originReason = "parent process is task scheduler";
+    } else if (parentName && serviceParents.has(parentName)) {
+      origin = "system";
+      launchTrigger = "service";
+      originReason = "parent process is service host";
+    } else if (isIdle || context.detectionSource === "windows-fallback") {
+      origin = "background";
+      launchTrigger = "unknown";
+      originReason = isIdle
+        ? "system idle at capture time"
+        : "fallback process detection";
+    } else {
+      origin = "user";
+      launchTrigger = "user_action";
+      originReason = "foreground window activity";
+    }
+
+    return {
+      origin,
+      launchTrigger,
+      isSecurityProcess,
+      originReason,
+    };
   }
 }
