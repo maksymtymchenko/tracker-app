@@ -175,7 +175,18 @@ export class ActivityTracker {
   }
 
   private equals(a: ActiveWindowInfo, b: ActiveWindowInfo): boolean {
-    return a.application === b.application && a.title === b.title;
+    const sameApp = a.application === b.application;
+    const sameTitle = a.title === b.title;
+    const samePid = (a.pid || -1) === (b.pid || -1);
+    const samePath = (a.path || "") === (b.path || "");
+    const sameBounds =
+      (!!a.bounds && !!b.bounds)
+        ? a.bounds.x === b.bounds.x &&
+          a.bounds.y === b.bounds.y &&
+          a.bounds.width === b.bounds.width &&
+          a.bounds.height === b.bounds.height
+        : !a.bounds && !b.bounds;
+    return sameApp && sameTitle && samePid && samePath && sameBounds;
   }
 
   private normalizeAppName(name: string): string {

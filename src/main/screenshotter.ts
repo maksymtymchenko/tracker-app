@@ -25,6 +25,10 @@ export class Screenshotter {
   private lastPermissionCheck = 0;
   private readonly PERMISSION_CHECK_INTERVAL = 30000; // Check every 30 seconds
   private readonly DEFAULT_WINDOW_CHANGE_INTERVAL_MS = 5000; // 5 seconds default for window changes
+  private readonly MAX_DIMENSION = 1600; // Downscale large captures to reduce size
+  private readonly JPEG_QUALITY = 80; // JPEG quality (0-100)
+  private readonly MAX_LOCAL_SCREENSHOTS = 500; // Retain at most this many local files
+  private readonly MAX_LOCAL_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   private isSystemSleeping = false;
   private lastWakeTime = Date.now();
 
@@ -65,6 +69,66 @@ export class Screenshotter {
       }
     } catch (err) {
       logger.error('[tracker] Failed to setup power monitor:', (err as Error).message);
+    }
+  }
+
+  /**
+   * Downscale and compress image to reduce bandwidth/storage.
+   * Returns a JPEG data URL and buffer.
+   */
+  private optimizeImage(img: Electron.NativeImage): {
+    dataUrl: string;
+    buffer: Buffer;
+  } {
+    const size = img.getSize();
+    const scale =
+      Math.max(size.width, size.height) > this.MAX_DIMENSION
+        ? this.MAX_DIMENSION / Math.max(size.width, size.height)
+        : 1;
+    const targetWidth = Math.max(1, Math.round(size.width * scale));
+    const targetHeight = Math.max(1, Math.round(size.height * scale));
+    const resized =
+      scale < 1 ? img.resize({ width: targetWidth, height: targetHeight }) : img;
+    const jpegBuffer = resized.toJPEG(this.JPEG_QUALITY);
+    const dataUrl = `data:image/jpeg;base64,${jpegBuffer.toString('base64')}`;
+    return { dataUrl, buffer: jpegBuffer };
+  }
+
+  /**
+   * Cleanup old screenshots to avoid unbounded disk usage.
+   */
+  private pruneLocalScreenshots(): void {
+    try {
+      if (!fs.existsSync(SCREENSHOT_DIR)) return;
+      const files = fs.readdirSync(SCREENSHOT_DIR).map((name) => {
+        const full = path.join(SCREENSHOT_DIR, name);
+        const stat = fs.statSync(full);
+        return { full, mtime: stat.mtimeMs };
+      });
+      const now = Date.now();
+      const fresh = files.filter(
+        (f) => now - f.mtime <= this.MAX_LOCAL_AGE_MS
+      );
+      const sorted = fresh.sort((a, b) => b.mtime - a.mtime);
+      const keep = sorted.slice(0, this.MAX_LOCAL_SCREENSHOTS);
+      const keepSet = new Set(keep.map((f) => f.full));
+      files
+        .filter((f) => !keepSet.has(f.full))
+        .forEach((f) => {
+          try {
+            fs.unlinkSync(f.full);
+          } catch (err) {
+            logger.error(
+              '[tracker] Failed to delete old screenshot:',
+              (err as Error).message
+            );
+          }
+        });
+    } catch (err) {
+      logger.error(
+        '[tracker] Error pruning local screenshots:',
+        (err as Error).message
+      );
     }
   }
 
@@ -229,7 +293,6 @@ export class Screenshotter {
       logger.log(`[tracker] Screenshot skipped: rate limited (${Math.round(timeSinceLastShot / 1000)}s since last, need ${minInterval / 1000}s)`);
       return;
     }
-    this.lastAt = now;
     logger.log(`[tracker] Attempting screenshot capture (reason: ${reason})`);
     if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
     
@@ -247,6 +310,7 @@ export class Screenshotter {
     }
     
     let dataUrl = '';
+    let optimizedBuffer: Buffer | null = null;
     // Preferred: capture via native module in main process
     // Note: On macOS, screenshot-desktop requires Screen Recording permission
     // On macOS with multiple displays, it may capture all screens combined or need screen index
@@ -284,7 +348,9 @@ export class Screenshotter {
           return;
         }
         
-        dataUrl = img.toDataURL();
+        const optimized = this.optimizeImage(img);
+        dataUrl = optimized.dataUrl;
+        optimizedBuffer = optimized.buffer;
         if (!dataUrl || !dataUrl.startsWith('data:image')) {
           throw new Error('screenshot-desktop returned invalid image data');
         }
@@ -347,7 +413,10 @@ export class Screenshotter {
           // Continue with screenshot if check fails
         }
         
-        dataUrl = fallbackResult;
+        const fallbackImg = nativeImage.createFromDataURL(fallbackResult);
+        const optimized = this.optimizeImage(fallbackImg);
+        dataUrl = optimized.dataUrl;
+        optimizedBuffer = optimized.buffer;
       } catch (fallbackErr) {
         const fallbackErrorMsg = (fallbackErr as Error).message || String(fallbackErr);
         const fallbackErrorStack = (fallbackErr as Error).stack || '';
@@ -362,10 +431,15 @@ export class Screenshotter {
       logger.error('[tracker] screenshot capture produced invalid data URL');
       return;
     }
-    const pngBuffer = nativeImage.createFromDataURL(dataUrl).toPNG();
-    const filename = path.join(SCREENSHOT_DIR, `shot-${now}.png`);
-    fs.writeFileSync(filename, pngBuffer);
-    logger.log(`[tracker] Screenshot saved locally: ${filename} (${pngBuffer.length} bytes)`);
+    const uploadImage = nativeImage.createFromDataURL(dataUrl);
+    if (!optimizedBuffer) {
+      optimizedBuffer = uploadImage.toJPEG(this.JPEG_QUALITY);
+    }
+    const filename = path.join(SCREENSHOT_DIR, `shot-${now}.jpg`);
+    fs.writeFileSync(filename, optimizedBuffer);
+    this.lastAt = now;
+    logger.log(`[tracker] Screenshot saved locally: ${filename} (${optimizedBuffer.length} bytes)`);
+    this.pruneLocalScreenshots();
     const data: ScreenshotData = { filename, reason };
     const event: BaseEvent = {
       username: this.opts.username,

@@ -29,11 +29,26 @@ let isSessionPaused = false;
 let sessionInfoCache: { sessionName?: string; sessionId?: number } | null = null;
 let sessionInfoCacheAt = 0;
 
+const MAX_BUFFER_EVENTS = 1000;
+const SCREENSHOT_QUEUE_LIMIT = 50;
+const SCREENSHOT_MAX_ATTEMPTS = 5;
+const SCREENSHOT_BACKOFF_BASE_MS = 5000;
+const SCREENSHOT_BACKOFF_MAX_MS = 60000;
+const FLUSH_BACKOFF_BASE_MS = 5000;
+const FLUSH_BACKOFF_MAX_MS = 60000;
+
 const execAsync = promisify(exec);
 
 interface QuitPasswordResult {
   isCorrect: boolean;
   wasCancelled: boolean;
+}
+
+interface PendingScreenshot {
+  event: BaseEvent;
+  base64: string;
+  attempts: number;
+  nextAttemptAt: number;
 }
 
 /**
@@ -681,6 +696,10 @@ let flushTimer: NodeJS.Timeout | null = null;
 let trayController: TrayController | null = null;
 let autoUpdater: AutoUpdater | null = null;
 let isQuitting = false;
+let screenshotQueue: PendingScreenshot[] = [];
+let processingScreenshotQueue = false;
+let flushBackoffMs = 0;
+let nextFlushAllowedAt = 0;
 
 // Set isQuitting flag on app object for updater to check
 (app as any).isQuitting = false;
@@ -694,7 +713,7 @@ let isQuitting = false;
 
 function setupTracking(username: string): void {
   const config = ensureConfigFile();
-  buffer = new EventBuffer(config.batchSize);
+  buffer = new EventBuffer(config.batchSize, MAX_BUFFER_EVENTS);
   const serverUrl = getEffectiveServerUrl(config.serverUrl);
   apiClient = new ApiClient(serverUrl);
   if (!serverUrl) {
@@ -817,51 +836,7 @@ function setupTracking(username: string): void {
       },
       (event, base64) => {
         onEvent(event);
-        // fire-and-forget upload, coalesced by server
-        const currentUser = getCurrentUsername();
-        const base64Length = base64 ? base64.length : 0;
-        console.log(
-          `[tracker] Uploading screenshot: ${base64Length} bytes, user: ${currentUser}, reason: ${
-            (event.data as any)?.reason || "unknown"
-          }`
-        );
-        apiClient
-          .uploadScreenshot({
-            deviceId,
-            domain: "windows-desktop",
-            username: currentUser,
-            screenshot: base64,
-            sessionName: getSessionInfoSnapshot().sessionName,
-            sessionId: getSessionInfoSnapshot().sessionId,
-          })
-          .then(() => {
-            try {
-              console.log(
-                `[tracker] screenshot upload: SUCCESS (user: ${currentUser}, size: ${base64Length} bytes)`
-              );
-            } catch {}
-          })
-          .catch((err) => {
-            try {
-              const errorMsg = err?.message || err || "Unknown error";
-              const statusCode = err?.response?.status;
-              const statusText = err?.response?.statusText;
-              console.log(
-                `[tracker] screenshot upload: FAILED (user: ${currentUser}, size: ${base64Length} bytes)`
-              );
-              console.log(
-                `[tracker] screenshot upload error: ${errorMsg}${
-                  statusCode ? ` (HTTP ${statusCode} ${statusText})` : ""
-                }`
-              );
-              if (err?.response?.data) {
-                console.log(
-                  `[tracker] screenshot upload error response:`,
-                  err.response.data
-                );
-              }
-            } catch {}
-          });
+        enqueueScreenshot(event, base64);
       }
     );
     screenshotScheduler = new ScreenshotScheduler({
@@ -920,10 +895,111 @@ function setupTracking(username: string): void {
 
   if (flushTimer) clearInterval(flushTimer);
   // Flush every 5 seconds to ensure events are sent promptly
-  flushTimer = setInterval(() => flushNow().catch(() => {}), 5000);
+  flushTimer = setInterval(() => {
+    flushNow().catch(() => {});
+    processScreenshotQueue().catch(() => {});
+  }, 5000);
+}
+
+function enqueueScreenshot(event: BaseEvent, base64: string): void {
+  if (!base64) {
+    logger.log("[tracker] Screenshot upload skipped: empty payload");
+    return;
+  }
+  if (screenshotQueue.length >= SCREENSHOT_QUEUE_LIMIT) {
+    const dropped = screenshotQueue.shift();
+    logger.warn(
+      `[tracker] Screenshot queue full (${SCREENSHOT_QUEUE_LIMIT}) - dropping oldest (reason: ${
+        ((dropped?.event.data as any)?.reason as string) || "unknown"
+      })`
+    );
+  }
+  const base64Length = base64.length;
+  const reason = ((event.data as any)?.reason as string) || "unknown";
+  const currentUser = getCurrentUsername();
+  screenshotQueue.push({
+    event,
+    base64,
+    attempts: 0,
+    nextAttemptAt: Date.now(),
+  });
+  console.log(
+    `[tracker] queued screenshot upload: ${base64Length} bytes, user: ${currentUser}, reason: ${reason}`
+  );
+  processScreenshotQueue().catch(() => {});
+}
+
+function removeScreenshotJob(job: PendingScreenshot): void {
+  const idx = screenshotQueue.indexOf(job);
+  if (idx >= 0) {
+    screenshotQueue.splice(idx, 1);
+  }
+}
+
+async function processScreenshotQueue(): Promise<void> {
+  if (processingScreenshotQueue) return;
+  processingScreenshotQueue = true;
+  try {
+    screenshotQueue.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt);
+    for (const job of [...screenshotQueue]) {
+      if (job.nextAttemptAt > Date.now()) {
+        break;
+      }
+      const currentUser = getCurrentUsername();
+      const sessionInfo = getSessionInfoSnapshot();
+      const reason = ((job.event.data as any)?.reason as string) || "unknown";
+      const base64Length = job.base64?.length || 0;
+      try {
+        await apiClient.uploadScreenshot({
+          deviceId,
+          domain: "windows-desktop",
+          username: currentUser,
+          screenshot: job.base64,
+          sessionName: sessionInfo.sessionName,
+          sessionId: sessionInfo.sessionId,
+        });
+        console.log(
+          `[tracker] screenshot upload: SUCCESS (user: ${currentUser}, size: ${base64Length} bytes, attempts: ${
+            job.attempts + 1
+          })`
+        );
+        removeScreenshotJob(job);
+      } catch (err) {
+        job.attempts += 1;
+        const errorMsg = err instanceof Error ? err.message : "Unknown error";
+        const backoff = Math.min(
+          SCREENSHOT_BACKOFF_MAX_MS,
+          SCREENSHOT_BACKOFF_BASE_MS * Math.pow(2, job.attempts - 1)
+        );
+        job.nextAttemptAt = Date.now() + backoff;
+        if (job.attempts >= SCREENSHOT_MAX_ATTEMPTS) {
+          logger.warn(
+            `[tracker] screenshot upload dropped after ${job.attempts} attempts (reason: ${reason}) - last error: ${errorMsg}`
+          );
+          removeScreenshotJob(job);
+        } else {
+          logger.log(
+            `[tracker] screenshot upload retry ${job.attempts}/${SCREENSHOT_MAX_ATTEMPTS} in ${Math.round(
+              backoff / 1000
+            )}s (reason: ${reason}) - error: ${errorMsg}`
+          );
+        }
+      }
+    }
+  } finally {
+    processingScreenshotQueue = false;
+  }
 }
 
 async function flushNow(): Promise<void> {
+  const nowTs = Date.now();
+  if (nowTs < nextFlushAllowedAt) {
+    const remaining = Math.max(0, nextFlushAllowedAt - nowTs);
+    logger.log(
+      `[tracker] flush skipped: backoff ${Math.round(remaining / 1000)}s remaining`
+    );
+    return;
+  }
   const events = buffer.drain();
   if (events.length === 0) {
     // Still show status even if no events to flush
@@ -955,11 +1031,24 @@ async function flushNow(): Promise<void> {
     console.log("[tracker] flush failed:", errorMsg);
     // On error, re-queue at head by simply pushing back (simple approach)
     events.forEach((e) => buffer.add(e));
+    flushBackoffMs =
+      flushBackoffMs === 0
+        ? FLUSH_BACKOFF_BASE_MS
+        : Math.min(FLUSH_BACKOFF_MAX_MS, flushBackoffMs * 2);
+    nextFlushAllowedAt = Date.now() + flushBackoffMs;
+    logger.log(
+      `[tracker] flush backoff applied: ${Math.round(
+        flushBackoffMs / 1000
+      )}s (next at ${new Date(nextFlushAllowedAt).toISOString()})`
+    );
     const pending = buffer.size();
     if (pending > 0) {
       sendStatus(`Tracking active (${pending} pending) - retrying`);
     }
+    return;
   }
+  flushBackoffMs = 0;
+  nextFlushAllowedAt = 0;
 }
 
 function startTracking(): void {
