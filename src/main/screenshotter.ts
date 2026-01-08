@@ -73,12 +73,12 @@ export class Screenshotter {
   }
 
   /**
-   * Downscale and compress image to reduce bandwidth/storage.
-   * Returns a JPEG data URL and buffer.
+   * Downscale image if needed to reduce bandwidth.
+   * Returns PNG data URL for upload (server/UI expects PNG) and JPEG buffer for local storage.
    */
   private optimizeImage(img: Electron.NativeImage): {
-    dataUrl: string;
-    buffer: Buffer;
+    dataUrl: string; // PNG format for upload compatibility
+    buffer: Buffer; // JPEG format for local storage efficiency
   } {
     const size = img.getSize();
     const scale =
@@ -89,9 +89,11 @@ export class Screenshotter {
     const targetHeight = Math.max(1, Math.round(size.height * scale));
     const resized =
       scale < 1 ? img.resize({ width: targetWidth, height: targetHeight }) : img;
+    // PNG data URL for upload (server/UI expects PNG format)
+    const pngDataUrl = resized.toDataURL();
+    // JPEG buffer for local storage (more efficient)
     const jpegBuffer = resized.toJPEG(this.JPEG_QUALITY);
-    const dataUrl = `data:image/jpeg;base64,${jpegBuffer.toString('base64')}`;
-    return { dataUrl, buffer: jpegBuffer };
+    return { dataUrl: pngDataUrl, buffer: jpegBuffer };
   }
 
   /**
