@@ -61,6 +61,8 @@ class IdleDetector {
 }
 
 export class ScreenshotScheduler {
+  private readonly WINDOW_CHANGE_MIN_INTERVAL_MS = 8000; // Hardcoded shorter window-change minimum
+  private readonly TIME_JITTER_RATIO = 0.1; // +/-10% jitter to avoid synchronized spikes
   private idleDetector: IdleDetector;
   private timeBasedTimer: NodeJS.Timeout | null = null;
   private windowChangeTimer: NodeJS.Timeout | null = null;
@@ -118,7 +120,7 @@ export class ScreenshotScheduler {
       logger.log(`[tracker] Screenshot skipped (${reason}): user is idle`);
       return;
     }
-    if (!this.canCapture()) {
+    if (!this.canCapture(reason)) {
       return;
     }
     const screenIndex = await this.resolveScreenIndex();
@@ -135,13 +137,17 @@ export class ScreenshotScheduler {
     }
   }
 
-  private canCapture(): boolean {
+  private canCapture(reason: string): boolean {
     const now = Date.now();
-    if (now - this.lastCaptureAt < this.opts.minIntervalMs) {
+    const minIntervalMs =
+      reason === "window_change"
+        ? this.WINDOW_CHANGE_MIN_INTERVAL_MS
+        : this.opts.minIntervalMs;
+    if (now - this.lastCaptureAt < minIntervalMs) {
       logger.log(
         `[tracker] Screenshot skipped: rate limit (${Math.round(
           (now - this.lastCaptureAt) / 1000
-        )}s since last, require ${Math.round(this.opts.minIntervalMs / 1000)}s)`
+        )}s since last, require ${Math.round(minIntervalMs / 1000)}s)`
       );
       return false;
     }
@@ -166,10 +172,11 @@ export class ScreenshotScheduler {
     if (this.isIdle || delayMs <= 0) {
       return;
     }
+    const jitteredDelay = this.getJitteredDelay(delayMs);
     this.timeBasedTimer = setTimeout(async () => {
       await this.requestCapture("time_interval");
       this.scheduleNextTimeShot(this.opts.timeBasedIntervalMs);
-    }, delayMs);
+    }, jitteredDelay);
   }
 
   private cancelTimeBasedTimer(): void {
@@ -184,6 +191,14 @@ export class ScreenshotScheduler {
       clearTimeout(this.windowChangeTimer);
       this.windowChangeTimer = null;
     }
+  }
+
+  private getJitteredDelay(baseMs: number): number {
+    const min = 1 - this.TIME_JITTER_RATIO;
+    const max = 1 + this.TIME_JITTER_RATIO;
+    const jitter = min + Math.random() * (max - min);
+    const jittered = Math.round(baseMs * jitter);
+    return Math.max(1000, jittered);
   }
 
   private handleIdleChange(isIdle: boolean): void {
