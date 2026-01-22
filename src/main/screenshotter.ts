@@ -155,12 +155,21 @@ export class Screenshotter {
   /**
    * Detect if a screenshot is mostly black (indicating system sleep or display off)
    * Returns true if the image is mostly black/dark
+   * 
+   * Improved detection: Only filter if screenshot is genuinely black (very low brightness)
+   * and has suspiciously small file size, or if it's completely black (100% dark).
    */
-  private isBlackScreenshot(img: Electron.NativeImage): boolean {
+  private isBlackScreenshot(img: Electron.NativeImage, originalBufferSize?: number): boolean {
     try {
       const size = img.getSize();
       const width = size.width;
       const height = size.height;
+      
+      // If image is empty or invalid, don't filter (let it through for debugging)
+      if (width === 0 || height === 0) {
+        logger.warn('[tracker] Screenshot has zero dimensions - allowing through');
+        return false;
+      }
       
       // Resize to a smaller image for faster analysis (100x100 is enough to detect black screens)
       const analysisSize = 100;
@@ -176,11 +185,14 @@ export class Screenshotter {
       
       if (!buffer || buffer.length === 0) {
         // If we can't get bitmap, don't filter
+        logger.warn('[tracker] Could not get bitmap buffer - allowing screenshot through');
         return false;
       }
       
       let darkPixelCount = 0;
+      let veryDarkPixelCount = 0;
       const threshold = 30; // RGB threshold for "black" (0-255, lower = darker)
+      const veryDarkThreshold = 10; // Very dark threshold (almost pure black)
       const totalPixels = scaledWidth * scaledHeight;
       
       // Check pixels in the resized image
@@ -197,14 +209,34 @@ export class Screenshotter {
         if (brightness < threshold) {
           darkPixelCount++;
         }
+        if (brightness < veryDarkThreshold) {
+          veryDarkPixelCount++;
+        }
       }
       
-      // If more than 90% of pixels are dark, consider it a black screenshot
       const darkRatio = darkPixelCount / totalPixels;
-      const isBlack = darkRatio > 0.9;
+      const veryDarkRatio = veryDarkPixelCount / totalPixels;
+      
+      // Check file size - if it's suspiciously small, it might be a black screen
+      // A normal 1680x1050 screenshot should be at least 50KB+ even when compressed
+      const suspiciouslySmall: boolean = originalBufferSize !== undefined && originalBufferSize < 20000 && (width * height) > 1000000;
+      
+      // Only filter if:
+      // 1. 100% of pixels are very dark (almost pure black) - definitely a black screen
+      // 2. OR 95%+ dark AND file is suspiciously small - likely a black screen
+      const isBlack = veryDarkRatio > 0.99 || (darkRatio > 0.95 && suspiciouslySmall);
       
       if (isBlack) {
-        logger.log(`[tracker] Black screenshot detected: ${Math.round(darkRatio * 100)}% dark pixels (${scaledWidth}x${scaledHeight} analysis)`);
+        logger.log(
+          `[tracker] Black screenshot detected: ${Math.round(darkRatio * 100)}% dark pixels, ` +
+          `${Math.round(veryDarkRatio * 100)}% very dark pixels (${scaledWidth}x${scaledHeight} analysis), ` +
+          `buffer size: ${originalBufferSize || 'unknown'} bytes`
+        );
+      } else if (darkRatio > 0.5) {
+        // Log if mostly dark but not black enough to filter (for debugging)
+        logger.log(
+          `[tracker] Screenshot is ${Math.round(darkRatio * 100)}% dark but not black enough to filter - allowing through`
+        );
       }
       
       return isBlack;
@@ -345,8 +377,9 @@ export class Screenshotter {
         logger.log(`[tracker] Screenshot captured: ${imgSize.width}x${imgSize.height}, ${buf.length} bytes`);
         
         // Check if screenshot is black (system might be sleeping)
-        if (this.isBlackScreenshot(img)) {
-          logger.log(`[tracker] Screenshot skipped: black screenshot detected (likely system sleep)`);
+        // Pass buffer size for better detection
+        if (this.isBlackScreenshot(img, buf.length)) {
+          logger.log(`[tracker] Screenshot skipped: black screenshot detected (likely system sleep or display off)`);
           return;
         }
         
@@ -406,9 +439,13 @@ export class Screenshotter {
         // Check if fallback screenshot is black
         try {
           const fallbackImg = nativeImage.createFromDataURL(fallbackResult);
-          if (!fallbackImg.isEmpty() && this.isBlackScreenshot(fallbackImg)) {
-            logger.log(`[tracker] Screenshot skipped: black screenshot detected in fallback (likely system sleep)`);
-            return;
+          if (!fallbackImg.isEmpty()) {
+            // Estimate buffer size from data URL (approximate)
+            const estimatedSize = Math.floor(fallbackResult.length * 0.75); // Base64 is ~33% larger
+            if (this.isBlackScreenshot(fallbackImg, estimatedSize)) {
+              logger.log(`[tracker] Screenshot skipped: black screenshot detected in fallback (likely system sleep or display off)`);
+              return;
+            }
           }
         } catch (err) {
           logger.error('[tracker] Error checking fallback screenshot for black screen:', (err as Error).message);
