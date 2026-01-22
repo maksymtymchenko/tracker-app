@@ -91,16 +91,89 @@ export class ScreenshotScheduler {
     this.cancelWindowChangeTimer();
     this.hourlyTimestamps = [];
     this.lastCaptureAt = 0;
+    this.previousWindowInfo = null;
   }
+
+  private previousWindowInfo: ActiveWindowInfo | null = null;
 
   updateActiveWindow(info: ActiveWindowInfo): void {
     this.latestWindowInfo = info;
   }
 
-  handleWindowChange(): void {
+  /**
+   * Check if the window change represents a new window (different PID or application)
+   * vs just a title change within the same window
+   */
+  private isNewWindow(newInfo: ActiveWindowInfo): boolean {
+    if (!this.previousWindowInfo) {
+      return true; // First window is always considered "new"
+    }
+    const prev = this.previousWindowInfo;
+    const curr = newInfo;
+
+    // Different PID means it's a new process/window
+    if (
+      typeof prev.pid === "number" &&
+      typeof curr.pid === "number" &&
+      prev.pid !== curr.pid
+    ) {
+      return true;
+    }
+
+    // Different application name means it's a different app
+    if (prev.application !== curr.application) {
+      return true;
+    }
+
+    // Same PID and app - likely just a title change, not a new window
+    return false;
+  }
+
+  handleWindowChange(newWindowInfo?: ActiveWindowInfo): void {
     if (this.isIdle) {
       return;
     }
+
+    // Use the provided window info or fall back to latest
+    const windowInfo = newWindowInfo || this.latestWindowInfo;
+    if (!windowInfo) {
+      // No window info available, use default behavior
+      this.handleWindowChangeDefault();
+      return;
+    }
+
+    const isNew = this.isNewWindow(windowInfo);
+    this.previousWindowInfo = { ...windowInfo };
+
+    if (this.windowChangeTimer) {
+      clearTimeout(this.windowChangeTimer);
+      this.windowChangeTimer = null;
+    }
+
+    if (isNew) {
+      // New window detected - skip debounce delay, capture immediately
+      // (but still respect minimum interval rate limiting)
+      logger.log(
+        `[tracker] New window detected (${windowInfo.application}) - capturing immediately (skipping ${Math.round(
+          this.opts.windowChangeDebounceMs / 1000
+        )}s delay)`
+      );
+      this.requestCapture("window_change").catch(() => {});
+    } else {
+      // Same window, just title change - use debounce delay
+      logger.log(
+        `[tracker] Window change detected (same window) - scheduling screenshot after ${Math.round(
+          this.opts.windowChangeDebounceMs / 1000
+        )}s`
+      );
+      this.windowChangeTimer = setTimeout(() => {
+        this.windowChangeTimer = null;
+        this.requestCapture("window_change").catch(() => {});
+      }, this.opts.windowChangeDebounceMs);
+    }
+  }
+
+  private handleWindowChangeDefault(): void {
     if (this.windowChangeTimer) {
       clearTimeout(this.windowChangeTimer);
     }

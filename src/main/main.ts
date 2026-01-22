@@ -868,8 +868,8 @@ function setupTracking(username: string): void {
       },
       onWindowChange:
         config.trackScreenshots && config.screenshotOnWindowChange
-          ? () => {
-              screenshotScheduler?.handleWindowChange();
+          ? (info) => {
+              screenshotScheduler?.handleWindowChange(info);
             }
           : undefined,
     },
