@@ -193,6 +193,16 @@ export class ActivityTracker {
     return name.replace(/\.exe$/i, "").trim();
   }
 
+  /**
+   * Ensure application name is never empty (e.g. when active-win returns empty owner
+   * or PowerShell fails for remote-desktop apps like AnyDesk).
+   */
+  private ensureApplicationName(resolved: string, processName: string): string {
+    if (resolved && resolved.trim() !== "") return resolved;
+    const normalized = this.normalizeAppName(processName || "");
+    return normalized || "Unknown";
+  }
+
   private resolveWindowsAppName(name: string, execPath?: string): string {
     const normalized = this.normalizeAppName(name);
     if (process.platform !== "win32" || !execPath) {
@@ -281,10 +291,13 @@ export class ActivityTracker {
           const getActive = mod.default || mod;
           const info = await getActive();
           if (info && info.owner) {
-            const ownerName = info.owner.name || "Unknown";
-            const appName = this.resolveWindowsAppName(
-              ownerName,
-              info.owner.path || undefined
+            const ownerName = info.owner.name || "";
+            const appName = this.ensureApplicationName(
+              this.resolveWindowsAppName(
+                ownerName || "Unknown",
+                info.owner.path || undefined
+              ),
+              ownerName
             );
             const title = info.title || "";
             console.log(`[tracker] active-win success: ${appName} - ${title}`);
@@ -303,7 +316,7 @@ export class ActivityTracker {
               bounds,
               path,
               pid: info.owner.processId || undefined,
-              processName: ownerName,
+              processName: ownerName || undefined,
               detectionSource: "active-win",
             };
             return windowInfo;
@@ -367,9 +380,13 @@ export class ActivityTracker {
       const getActive = mod.default || mod;
       const info = await getActive();
       if (info && info.owner) {
-        const appName = this.resolveWindowsAppName(
-          info.owner.name || "Unknown",
-          info.owner.path || undefined
+        const ownerName = info.owner.name || "";
+        const appName = this.ensureApplicationName(
+          this.resolveWindowsAppName(
+            ownerName || "Unknown",
+            info.owner.path || undefined
+          ),
+          ownerName
         );
         const title = info.title || "";
         console.log(`[tracker] active-win detected: ${appName} - ${title}`);
@@ -463,10 +480,25 @@ export class ActivityTracker {
         // Continue with empty list
       }
 
-      // Sort by memory usage (user apps typically use more memory) or CPU
+      // Prefer known remote-desktop / fullscreen apps when active-win fails to see them
+      const knownForegroundProcessNames = new Set([
+        "anydesk.exe",
+        "msrdcw.exe", // Remote Desktop client
+        "mstsc.exe",  // Remote Desktop
+        "vncviewer.exe",
+        "teamviewer.exe",
+      ]);
+
+      // Sort by: known foreground app first, then memory, then CPU
       try {
         userProcesses.sort((a, b) => {
           try {
+            const nameA = ((a.name || "") as string).toLowerCase();
+            const nameB = ((b.name || "") as string).toLowerCase();
+            const aIsKnown = knownForegroundProcessNames.has(nameA);
+            const bIsKnown = knownForegroundProcessNames.has(nameB);
+            if (aIsKnown && !bIsKnown) return -1;
+            if (!aIsKnown && bIsKnown) return 1;
             const memA = a.mem || 0;
             const memB = b.mem || 0;
             if (Math.abs(memA - memB) > 10) {
@@ -490,9 +522,10 @@ export class ActivityTracker {
 
       const top = userProcesses[0];
       if (top && top.name) {
-        const appName = this.resolveWindowsAppName(
-          top.name || "Unknown",
-          top.path || undefined
+        const processName = top.name || "";
+        const appName = this.ensureApplicationName(
+          this.resolveWindowsAppName(processName || "Unknown", top.path || undefined),
+          processName
         );
         console.log(
           `[tracker] fallback detected: ${appName} (mem: ${top.mem}MB, cpu: ${
@@ -518,9 +551,10 @@ export class ActivityTracker {
           return name && !systemProcesses.has(name);
         });
         if (firstNonSystem && firstNonSystem.name) {
-          const appName = this.resolveWindowsAppName(
-            firstNonSystem.name,
-            firstNonSystem.path || undefined
+          const processName = firstNonSystem.name || "";
+          const appName = this.ensureApplicationName(
+            this.resolveWindowsAppName(processName, firstNonSystem.path || undefined),
+            processName
           );
           console.log(`[tracker] fallback last resort: ${appName}`);
           return {
