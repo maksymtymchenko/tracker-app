@@ -61,12 +61,14 @@ class IdleDetector {
 }
 
 export class ScreenshotScheduler {
-  private readonly WINDOW_CHANGE_MIN_INTERVAL_MS = 8000; // Hardcoded shorter window-change minimum
+  private readonly WINDOW_CHANGE_MIN_INTERVAL_MS = 8000; // Min between any two window-change captures
+  private readonly SAME_WINDOW_CHANGE_MIN_INTERVAL_MS = 120000; // Min between title-only change captures (2 min)
   private readonly TIME_JITTER_RATIO = 0.1; // +/-10% jitter to avoid synchronized spikes
   private idleDetector: IdleDetector;
   private timeBasedTimer: NodeJS.Timeout | null = null;
   private windowChangeTimer: NodeJS.Timeout | null = null;
   private lastCaptureAt = 0;
+  private lastWindowChangeCaptureAt = 0; // When we last took a window_change screenshot
   private hourlyTimestamps: number[] = [];
   private isIdle = false;
   private latestWindowInfo: ActiveWindowInfo | null = null;
@@ -91,6 +93,7 @@ export class ScreenshotScheduler {
     this.cancelWindowChangeTimer();
     this.hourlyTimestamps = [];
     this.lastCaptureAt = 0;
+    this.lastWindowChangeCaptureAt = 0;
     this.previousWindowInfo = null;
   }
 
@@ -160,7 +163,17 @@ export class ScreenshotScheduler {
       );
       this.requestCapture("window_change").catch(() => {});
     } else {
-      // Same window, just title change - use debounce delay
+      // Same window, just title change - throttle to avoid many screenshots (e.g. AnyDesk/Discord title updates)
+      const now = Date.now();
+      const timeSinceLastWindowChangeCapture = now - this.lastWindowChangeCaptureAt;
+      if (timeSinceLastWindowChangeCapture < this.SAME_WINDOW_CHANGE_MIN_INTERVAL_MS) {
+        logger.log(
+          `[tracker] Window change (same window, title only) - skipping screenshot ` +
+            `(last window_change ${Math.round(timeSinceLastWindowChangeCapture / 1000)}s ago, ` +
+            `min ${Math.round(this.SAME_WINDOW_CHANGE_MIN_INTERVAL_MS / 1000)}s)`
+        );
+        return;
+      }
       logger.log(
         `[tracker] Window change detected (same window) - scheduling screenshot after ${Math.round(
           this.opts.windowChangeDebounceMs / 1000
@@ -198,10 +211,17 @@ export class ScreenshotScheduler {
     }
     const screenIndex = await this.resolveScreenIndex();
     try {
-      await this.opts.screenshotter.capture(reason, screenIndex);
-      const now = Date.now();
-      this.lastCaptureAt = now;
-      this.hourlyTimestamps.push(now);
+      const taken = await this.opts.screenshotter.capture(reason, screenIndex);
+      // Only update timestamps and hourly count when a screenshot was actually taken
+      // (skipped attempts e.g. black screen should not consume rate limit or hourly cap)
+      if (taken) {
+        const now = Date.now();
+        this.lastCaptureAt = now;
+        if (reason === "window_change") {
+          this.lastWindowChangeCaptureAt = now;
+        }
+        this.hourlyTimestamps.push(now);
+      }
     } catch (err) {
       logger.error(
         `[tracker] screenshot failed (${reason}):`,

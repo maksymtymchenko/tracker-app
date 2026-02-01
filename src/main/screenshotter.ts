@@ -310,11 +310,16 @@ export class Screenshotter {
     }
   }
 
-  async capture(reason: string, screenIndex?: number): Promise<void> {
+  /**
+   * Attempt to capture a screenshot. Returns true if a screenshot was taken and sent,
+   * false if skipped (idle, rate limit, black screen, etc.) so the scheduler can avoid
+   * counting skipped attempts toward rate limits and hourly caps.
+   */
+  async capture(reason: string, screenIndex?: number): Promise<boolean> {
     // Check if system is sleeping first
     if (this.isSystemAsleep()) {
       logger.log(`[tracker] Screenshot skipped: system is sleeping (reason: ${reason})`);
-      return;
+      return false;
     }
 
     const now = Date.now();
@@ -325,7 +330,7 @@ export class Screenshotter {
       : this.opts.minIntervalMs;
     if (timeSinceLastShot < minInterval) {
       logger.log(`[tracker] Screenshot skipped: rate limited (${Math.round(timeSinceLastShot / 1000)}s since last, need ${minInterval / 1000}s)`);
-      return;
+      return false;
     }
     logger.log(`[tracker] Attempting screenshot capture (reason: ${reason})`);
     if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -339,7 +344,7 @@ export class Screenshotter {
           console.log('[tracker] Skipping screenshot: Screen Recording permission not granted');
           console.log('[tracker] Please grant permission in System Settings → Privacy & Security → Screen Recording');
         }
-        return;
+        return false;
       }
     }
     
@@ -380,7 +385,7 @@ export class Screenshotter {
         // Pass buffer size for better detection
         if (this.isBlackScreenshot(img, buf.length)) {
           logger.log(`[tracker] Screenshot skipped: black screenshot detected (likely system sleep or display off)`);
-          return;
+          return false;
         }
         
         const optimized = this.optimizeImage(img);
@@ -414,7 +419,7 @@ export class Screenshotter {
           console.log('[tracker] Permission appears to have been revoked or denied');
         }
         console.log('[tracker] On macOS, ensure Screen Recording permission is granted in System Settings → Privacy & Security → Screen Recording');
-        return;
+        return false;
       }
       // On other platforms, fallback is safe
       logger.log('[tracker] Attempting screenshot fallback via renderer process (Windows/Linux)');
@@ -432,7 +437,7 @@ export class Screenshotter {
         if (!fallbackResult || fallbackResult === '') {
           logger.error('[tracker] screenshot fallback returned empty data URL - this might mean the window is not available or desktopCapturer failed');
           logger.error('[tracker] On Windows, ensure the app window is created and visible');
-          return;
+          return false;
         }
         logger.log(`[tracker] screenshot fallback succeeded: ${fallbackResult.length} bytes`);
         
@@ -444,7 +449,7 @@ export class Screenshotter {
             const estimatedSize = Math.floor(fallbackResult.length * 0.75); // Base64 is ~33% larger
             if (this.isBlackScreenshot(fallbackImg, estimatedSize)) {
               logger.log(`[tracker] Screenshot skipped: black screenshot detected in fallback (likely system sleep or display off)`);
-              return;
+              return false;
             }
           }
         } catch (err) {
@@ -463,12 +468,12 @@ export class Screenshotter {
         if (fallbackErrorStack) {
           logger.error('[tracker] screenshot fallback error stack:', fallbackErrorStack);
         }
-        return;
+        return false;
       }
     }
     if (!dataUrl || !dataUrl.startsWith('data:image')) {
       logger.error('[tracker] screenshot capture produced invalid data URL');
-      return;
+      return false;
     }
     const uploadImage = nativeImage.createFromDataURL(dataUrl);
     if (!optimizedBuffer) {
@@ -490,6 +495,7 @@ export class Screenshotter {
     };
     logger.log(`[tracker] Calling onShot handler to upload screenshot (reason: ${reason})`);
     this.onShot(event, dataUrl);
+    return true;
   }
 }
 

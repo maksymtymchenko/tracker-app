@@ -203,6 +203,22 @@ export class ActivityTracker {
     return normalized || "Unknown";
   }
 
+  /**
+   * Override application when window title clearly indicates a known app (e.g. AnyDesk).
+   * active-win sometimes reports the wrong owner (e.g. Microsoft Edge) for remote-desktop
+   * or embedded views; the window title is often correct.
+   */
+  private applicationFromWindowTitle(title: string): string | null {
+    if (!title || typeof title !== "string") return null;
+    const t = title.toLowerCase();
+    if (t.includes("anydesk")) return "AnyDesk";
+    if (t.includes("teamviewer")) return "TeamViewer";
+    if (t.includes("discord")) return "Discord";
+    if (t.includes("remote desktop") || t.includes("remote assistance")) return "Remote Desktop";
+    if (t.includes("vnc")) return "VNC";
+    return null;
+  }
+
   private resolveWindowsAppName(name: string, execPath?: string): string {
     const normalized = this.normalizeAppName(name);
     if (process.platform !== "win32" || !execPath) {
@@ -292,7 +308,7 @@ export class ActivityTracker {
           const info = await getActive();
           if (info && info.owner) {
             const ownerName = info.owner.name || "";
-            const appName = this.ensureApplicationName(
+            let appName = this.ensureApplicationName(
               this.resolveWindowsAppName(
                 ownerName || "Unknown",
                 info.owner.path || undefined
@@ -300,7 +316,20 @@ export class ActivityTracker {
               ownerName
             );
             const title = info.title || "";
-            console.log(`[tracker] active-win success: ${appName} - ${title}`);
+            // Override from title when active-win reports wrong owner (e.g. AnyDesk showing as Edge)
+            let titleApp = this.applicationFromWindowTitle(title);
+            if (!titleApp && info.owner.path) {
+              const pathLower = info.owner.path.toLowerCase();
+              if (pathLower.includes("anydesk")) titleApp = "AnyDesk";
+              else if (pathLower.includes("teamviewer")) titleApp = "TeamViewer";
+              else if (pathLower.includes("discord")) titleApp = "Discord";
+            }
+            if (titleApp) {
+              appName = titleApp;
+              console.log(`[tracker] active-win overridden: ${appName} (title: "${title.length > 50 ? title.slice(0, 50) + "..." : title}")`);
+            } else {
+              console.log(`[tracker] active-win success: ${appName} - ${title}`);
+            }
             const bounds = info.bounds
               ? {
                   x: info.bounds.x,
@@ -483,20 +512,34 @@ export class ActivityTracker {
       // Prefer known remote-desktop / fullscreen apps when active-win fails to see them
       const knownForegroundProcessNames = new Set([
         "anydesk.exe",
+        "anydesk",    // some APIs omit .exe
+        "discord.exe",
+        "discord",
         "msrdcw.exe", // Remote Desktop client
         "mstsc.exe",  // Remote Desktop
         "vncviewer.exe",
         "teamviewer.exe",
+        "teamviewer",
       ]);
+
+      const isKnownForegroundProcess = (name: string): boolean => {
+        const n = name.toLowerCase();
+        return (
+          knownForegroundProcessNames.has(n) ||
+          n.includes("anydesk") ||
+          n.includes("teamviewer") ||
+          n.includes("discord")
+        );
+      };
 
       // Sort by: known foreground app first, then memory, then CPU
       try {
         userProcesses.sort((a, b) => {
           try {
-            const nameA = ((a.name || "") as string).toLowerCase();
-            const nameB = ((b.name || "") as string).toLowerCase();
-            const aIsKnown = knownForegroundProcessNames.has(nameA);
-            const bIsKnown = knownForegroundProcessNames.has(nameB);
+            const nameA = (a.name || "") as string;
+            const nameB = (b.name || "") as string;
+            const aIsKnown = isKnownForegroundProcess(nameA);
+            const bIsKnown = isKnownForegroundProcess(nameB);
             if (aIsKnown && !bIsKnown) return -1;
             if (!aIsKnown && bIsKnown) return 1;
             const memA = a.mem || 0;
