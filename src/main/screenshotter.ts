@@ -350,60 +350,84 @@ export class Screenshotter {
     
     let dataUrl = '';
     let optimizedBuffer: Buffer | null = null;
-    // Preferred: capture via native module in main process
-    // Note: On macOS, screenshot-desktop requires Screen Recording permission
-    // On macOS with multiple displays, it may capture all screens combined or need screen index
-    try {
-      logger.log('[tracker] Attempting to load screenshot-desktop library...');
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const screenshot = require('screenshot-desktop');
-      logger.log('[tracker] screenshot-desktop library loaded successfully');
-      
-      // On macOS, try to specify screen index 0 (main display) to avoid capturing all screens combined
-      // If screen option is not supported or fails, it will fall back to default behavior
-      const screenshotOptions: { format: string; screen?: number } = { format: 'png' };
-      if (typeof screenIndex === 'number') {
-        screenshotOptions.screen = screenIndex;
-      } else if (process.platform === 'darwin') {
-        // Try screen 0 (main display) first - this helps avoid capturing wrong screen
-        screenshotOptions.screen = 0;
+    let buf: Buffer | null = null;
+
+    // Windows: prefer native in-process capture (node-screenshots) over JS subprocess (screenshot-desktop)
+    if (process.platform === 'win32') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { Monitor } = require('node-screenshots');
+        const monitors = Monitor.all();
+        if (monitors && monitors.length > 0) {
+          const monitor =
+            typeof screenIndex === 'number' && screenIndex >= 0 && screenIndex < monitors.length
+              ? monitors[screenIndex]
+              : monitors.find((m: { isPrimary?: boolean }) => m.isPrimary) || monitors[0];
+          logger.log('[tracker] Using node-screenshots (native) for capture');
+          const image = await monitor.captureImage();
+          // copyOutputData=true required in Electron to avoid crash (napi-rs issue #1346)
+          buf = await image.toPng(true);
+          logger.log(`[tracker] node-screenshots returned buffer: ${buf ? buf.length : 0} bytes`);
+        }
+      } catch (nativeErr) {
+        logger.log(
+          '[tracker] node-screenshots failed, falling back to screenshot-desktop:',
+          (nativeErr as Error).message
+        );
       }
-      
-      logger.log(`[tracker] Calling screenshot-desktop with options:`, screenshotOptions);
-      const buf: Buffer = await screenshot(screenshotOptions);
-      logger.log(`[tracker] screenshot-desktop returned buffer: ${buf ? buf.length : 0} bytes`);
-      
-      if (buf && buf.length > 0) {
+    }
+
+    // Use screenshot-desktop when: not Windows, or node-screenshots failed / unavailable
+    if (!buf || buf.length === 0) {
+      try {
+        logger.log('[tracker] Attempting to load screenshot-desktop library...');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const screenshot = require('screenshot-desktop');
+        logger.log('[tracker] screenshot-desktop library loaded successfully');
+
+        const screenshotOptions: { format: string; screen?: number } = { format: 'png' };
+        if (typeof screenIndex === 'number') {
+          screenshotOptions.screen = screenIndex;
+        } else if (process.platform === 'darwin') {
+          screenshotOptions.screen = 0;
+        }
+
+        logger.log(`[tracker] Calling screenshot-desktop with options:`, screenshotOptions);
+        buf = await screenshot(screenshotOptions);
+        logger.log(`[tracker] screenshot-desktop returned buffer: ${buf ? buf.length : 0} bytes`);
+      } catch (desktopErr) {
+        logger.log('[tracker] screenshot-desktop failed:', (desktopErr as Error).message);
+        buf = null;
+      }
+    }
+
+    if (buf && buf.length > 0) {
+      try {
         const img = nativeImage.createFromBuffer(buf);
         if (img.isEmpty()) {
-          throw new Error('screenshot-desktop returned empty image');
+          throw new Error('Capture returned empty image');
         }
         const imgSize = img.getSize();
         logger.log(`[tracker] Screenshot captured: ${imgSize.width}x${imgSize.height}, ${buf.length} bytes`);
-        
-        // Check if screenshot is black (system might be sleeping)
-        // Pass buffer size for better detection
+
         if (this.isBlackScreenshot(img, buf.length)) {
           logger.log(`[tracker] Screenshot skipped: black screenshot detected (likely system sleep or display off)`);
           return false;
         }
-        
+
         const optimized = this.optimizeImage(img);
         dataUrl = optimized.dataUrl;
         optimizedBuffer = optimized.buffer;
         if (!dataUrl || !dataUrl.startsWith('data:image')) {
-          throw new Error('screenshot-desktop returned invalid image data');
+          throw new Error('Capture produced invalid image data');
         }
         logger.log(`[tracker] Screenshot converted to data URL: ${dataUrl.length} bytes`);
-      } else {
-        throw new Error('screenshot-desktop returned empty buffer');
-      }
-    } catch (err) {
-      const errorMsg = (err as Error).message || String(err);
-      const errorStack = (err as Error).stack || '';
-      logger.error(`[tracker] screenshot-desktop failed: ${errorMsg}`);
+      } catch (err) {
+        const errorMsg = (err as Error).message || String(err);
+        const errorStack = (err as Error).stack || '';
+        logger.error(`[tracker] Screenshot capture/processing failed: ${errorMsg}`);
       if (errorStack) {
-        logger.error(`[tracker] screenshot-desktop error stack:`, errorStack);
+        logger.error(`[tracker] Screenshot error stack:`, errorStack);
       }
       
       // On macOS, don't use desktopCapturer fallback to avoid permission prompts
@@ -469,6 +493,32 @@ export class Screenshotter {
           logger.error('[tracker] screenshot fallback error stack:', fallbackErrorStack);
         }
         return false;
+      }
+      }
+    }
+    // When no buffer from native/screenshot-desktop (e.g. both failed on Windows), try renderer fallback
+    if ((!dataUrl || !dataUrl.startsWith('data:image')) && process.platform !== 'darwin') {
+      logger.log('[tracker] Attempting screenshot fallback via renderer process');
+      try {
+        const fallbackResult = await Promise.race([
+          this.opts.requestCapture(reason),
+          new Promise<string>((resolve) => {
+            setTimeout(() => {
+              logger.warn('[tracker] screenshot fallback timeout after 15 seconds');
+              resolve('');
+            }, 15000);
+          })
+        ]);
+        if (fallbackResult && fallbackResult.startsWith('data:image')) {
+          const fallbackImg = nativeImage.createFromDataURL(fallbackResult);
+          if (!fallbackImg.isEmpty() && !this.isBlackScreenshot(fallbackImg, Math.floor(fallbackResult.length * 0.75))) {
+            dataUrl = fallbackResult;
+            const optimized = this.optimizeImage(fallbackImg);
+            optimizedBuffer = optimized.buffer;
+          }
+        }
+      } catch (fallbackErr) {
+        logger.error('[tracker] screenshot fallback failed:', (fallbackErr as Error).message);
       }
     }
     if (!dataUrl || !dataUrl.startsWith('data:image')) {

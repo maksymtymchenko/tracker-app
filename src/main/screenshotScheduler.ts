@@ -314,6 +314,36 @@ export class ScreenshotScheduler {
       return undefined;
     }
     try {
+      // Windows: use node-screenshots Monitor.all() so index matches screenshotter's native path
+      if (process.platform === "win32") {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { Monitor } = require("node-screenshots");
+          const monitors = Monitor.all();
+          if (monitors && monitors.length > 0) {
+            const targetBounds =
+              this.opts.screenshotTarget === "primary"
+                ? screen.getPrimaryDisplay()?.bounds
+                : this.latestWindowInfo?.bounds ?? screen.getPrimaryDisplay()?.bounds;
+            if (targetBounds) {
+              const targetCenterX = targetBounds.x + targetBounds.width / 2;
+              const targetCenterY = targetBounds.y + targetBounds.height / 2;
+              const matchIndex = monitors.findIndex(
+                (m: { x: number; y: number; width: number; height: number; isPrimary?: boolean }) =>
+                  targetCenterX >= m.x &&
+                  targetCenterX <= m.x + m.width &&
+                  targetCenterY >= m.y &&
+                  targetCenterY <= m.y + m.height
+              );
+              if (matchIndex >= 0) return matchIndex;
+            }
+            const primaryIndex = monitors.findIndex((m: { isPrimary?: boolean }) => m.isPrimary);
+            return primaryIndex >= 0 ? primaryIndex : 0;
+          }
+        } catch {
+          // Fall through to screenshot-desktop list
+        }
+      }
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const screenshot = require("screenshot-desktop");
       if (!screenshot.listDisplays) {
@@ -342,7 +372,6 @@ export class ScreenshotScheduler {
       if (matchIndex >= 0) {
         return matchIndex;
       }
-      // fallback to primary display index (zero)
       return this.opts.screenshotTarget === "primary" ? 0 : undefined;
     } catch (err) {
       logger.error(

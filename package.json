@@ -1,13 +1,13 @@
 {
     "name": "windows-activity-tracker",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "private": true,
     "description": "Cross-platform (Windows/macOS/Linux) desktop activity tracker built with Electron and TypeScript",
     "main": "dist/main/main.js",
     "scripts": {
         "clean": "rimraf dist",
         "copy-html": "node scripts/copy-html.js",
-        "rebuild": "electron-rebuild -f -w screenshot-desktop",
+        "rebuild": "electron-rebuild -f -w screenshot-desktop,node-screenshots",
         "build": "npm run clean && tsc && npm run copy-html",
         "build:rebuild": "npm run build && npm run rebuild",
         "dev": "concurrently \"tsc -w\" \"wait-on dist/main/main.js && electron .\"",
@@ -34,7 +34,8 @@
             "package.json"
         ],
         "asarUnpack": [
-            "**/node_modules/screenshot-desktop/**/*"
+            "**/node_modules/screenshot-desktop/**/*",
+            "**/node_modules/node-screenshots/**/*"
         ],
         "win": {
             "target": [{
@@ -103,6 +104,7 @@
         "axios": "^1.7.7",
         "electron-store": "^8.2.0",
         "electron-updater": "^6.6.2",
+        "node-screenshots": "^0.2.1",
         "screenshot-desktop": "^1.15.1",
         "systeminformation": "^5.23.7",
         "uuid": "^9.0.1",

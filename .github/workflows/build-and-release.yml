@@ -47,6 +47,9 @@ jobs:
       - name: Install electron-builder app dependencies
         run: npx electron-builder install-app-deps
 
+      - name: Rebuild native modules
+        run: npm run rebuild
+
       - name: Unblock app-builder.exe (Windows Defender workaround)
         shell: pwsh
         run: |
@@ -117,98 +120,4 @@ jobs:
         with:
           name: windows-build
           path: release/*.exe
-          retention-days: 30
-
-  build-macos:
-    name: Build macOS
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Get version
-        id: version
-        run: |
-          if [ "${{ github.ref_type }}" == "tag" ]; then
-            VERSION="${{ github.ref_name }}"
-            # Remove 'v' prefix if present
-            VERSION=${VERSION#v}
-          else
-            # For branch pushes, use version from package.json
-            VERSION=$(node -p "require('./package.json').version")
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-          echo "Ref: ${{ github.ref }}"
-          echo "Ref type: ${{ github.ref_type }}"
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build application
-        run: npm run build
-
-      - name: Build macOS app
-        env:
-          PUBLISH: never
-        run: npm run build && npx electron-builder --mac --publish never
-
-      - name: Install AWS CLI
-        run: |
-          brew install awscli || pip3 install awscli
-
-      - name: Upload to Cloudflare R2
-        env:
-          CLOUDFLARE_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_ACCESS_KEY_ID }}
-          CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          CURRENT_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # Configure AWS CLI for Cloudflare R2
-          aws configure set aws_access_key_id $CLOUDFLARE_ACCESS_KEY_ID
-          aws configure set aws_secret_access_key $CLOUDFLARE_SECRET_ACCESS_KEY
-
-          # Clear all files from bucket before uploading new ones
-          echo "Clearing all files from bucket..."
-          aws s3 rm "s3://$R2_BUCKET_NAME/" --recursive --endpoint-url "$R2_ENDPOINT" || true
-          echo "Bucket cleared, ready to upload new files"
-
-          # Upload latest-mac.yml to tracker-app-auto-update subdirectory
-          if [ -f "release/latest-mac.yml" ]; then
-            aws s3 cp "release/latest-mac.yml" "s3://$R2_BUCKET_NAME/latest-mac.yml" \
-              --endpoint-url "$R2_ENDPOINT" \
-              --content-type "text/yaml"
-          fi
-
-          # Upload all DMG files to tracker-app-auto-update subdirectory
-          for dmg in release/*.dmg; do
-            if [ -f "$dmg" ]; then
-              echo "Uploading $(basename "$dmg")"
-              aws s3 cp "$dmg" "s3://$R2_BUCKET_NAME/$(basename "$dmg")" \
-                --endpoint-url "$R2_ENDPOINT"
-            fi
-          done
-
-          # Upload all ZIP files to tracker-app-auto-update subdirectory
-          for zip in release/*-mac.zip; do
-            if [ -f "$zip" ]; then
-              echo "Uploading $(basename "$zip")"
-              aws s3 cp "$zip" "s3://$R2_BUCKET_NAME/$(basename "$zip")" \
-                --endpoint-url "$R2_ENDPOINT"
-            fi
-          done
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: release/*.{dmg,zip}
           retention-days: 30
