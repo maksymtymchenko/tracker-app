@@ -47,6 +47,11 @@ jobs:
       - name: Install electron-builder app dependencies
         run: npx electron-builder install-app-deps
 
+      - name: Setup Python for node-gyp (distutils required; 3.12+ removed it)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Rebuild native modules
         run: npm run rebuild
 
