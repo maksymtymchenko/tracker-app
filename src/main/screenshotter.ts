@@ -24,7 +24,8 @@ export class Screenshotter {
   private hasPermission: boolean | null = null;
   private lastPermissionCheck = 0;
   private readonly PERMISSION_CHECK_INTERVAL = 30000; // Check every 30 seconds
-  private readonly DEFAULT_WINDOW_CHANGE_INTERVAL_MS = 5000; // 5 seconds default for window changes
+  // Short minimum so scheduler's 8s window-change limit is authoritative; this only avoids same-second double capture
+  private readonly DEFAULT_WINDOW_CHANGE_INTERVAL_MS = 1000;
   private readonly MAX_DIMENSION = 1600; // Downscale large captures to reduce size
   private readonly JPEG_QUALITY = 80; // JPEG quality (0-100)
   private readonly MAX_LOCAL_SCREENSHOTS = 500; // Retain at most this many local files

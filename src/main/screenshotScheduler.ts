@@ -236,11 +236,17 @@ export class ScreenshotScheduler {
       reason === "window_change"
         ? this.WINDOW_CHANGE_MIN_INTERVAL_MS
         : this.opts.minIntervalMs;
-    if (now - this.lastCaptureAt < minIntervalMs) {
+    // For window_change, rate-limit by last window-change capture only (not time_interval),
+    // so a recent time-based shot does not block window-change screenshots.
+    const lastRelevantAt =
+      reason === "window_change"
+        ? this.lastWindowChangeCaptureAt
+        : this.lastCaptureAt;
+    if (now - lastRelevantAt < minIntervalMs) {
       logger.log(
         `[tracker] Screenshot skipped: rate limit (${Math.round(
-          (now - this.lastCaptureAt) / 1000
-        )}s since last, require ${Math.round(minIntervalMs / 1000)}s)`
+          (now - lastRelevantAt) / 1000
+        )}s since last ${reason === "window_change" ? "window_change" : "capture"}, require ${Math.round(minIntervalMs / 1000)}s)`
       );
       return false;
     }

@@ -680,9 +680,7 @@ async function createWindow(): Promise<void> {
   }
   trayController.init(mainWindow);
 
-  // Initialize trackers but start/stop controlled via tray
-  setupTracking(config.username);
-  // Auto-start tracking to collect events immediately
+  // Initialize and start tracking (single setup, then start activity + scheduler)
   startTracking();
 }
 
